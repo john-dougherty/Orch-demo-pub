@@ -1,0 +1,52 @@
+{% if not approvals %}
+  <div class="text-sm text-slate-400 py-6 text-center">No pending approvals.</div>
+{% else %}
+  <ul class="divide-y divide-slate-100">
+    {% for a in approvals %}
+      <li class="py-3">
+        <div class="flex items-start justify-between gap-4">
+          <div class="flex-1 min-w-0">
+            <div class="flex items-center gap-2">
+              <span class="inline-block text-xs font-mono bg-amber-100 text-amber-800 px-2 py-0.5 rounded">tier 2</span>
+              <span class="text-sm font-medium">{{ a.tool_name }}</span>
+              <span class="text-xs text-slate-400">#{{ a.id }} &middot; {{ a.created_at }}</span>
+            </div>
+
+            {% if a.preview.kind == "email" %}
+              <div class="mt-2 bg-slate-50 border border-slate-200 rounded p-3 text-xs">
+                <div><span class="text-slate-400">to:</span> {{ a.preview.to }}</div>
+                <div><span class="text-slate-400">subject:</span> {{ a.preview.subject }}</div>
+                <pre class="mt-1 whitespace-pre-wrap font-sans text-slate-700">{{ a.preview.body }}</pre>
+              </div>
+            {% elif a.preview.kind == "invoice" %}
+              <div class="mt-2 bg-slate-50 border border-slate-200 rounded p-3 text-xs">
+                <div><span class="text-slate-400">client:</span> {{ a.preview.client }}</div>
+                <div><span class="text-slate-400">amount:</span> {{ a.preview.amount }}</div>
+                <div><span class="text-slate-400">description:</span> {{ a.preview.description }}</div>
+              </div>
+            {% else %}
+              <pre class="mt-2 bg-slate-50 border border-slate-200 rounded p-3 text-xs overflow-x-auto">{{ a.preview.body }}</pre>
+            {% endif %}
+
+            {% if a.rationale %}
+              <div class="mt-2 text-xs text-slate-500"><em>rationale:</em> {{ a.rationale }}</div>
+            {% endif %}
+          </div>
+
+          <div class="flex flex-col gap-2">
+            <button hx-post="/approvals/{{ a.id }}/approve"
+                    hx-target="#approvals" hx-swap="innerHTML"
+                    class="bg-emerald-600 hover:bg-emerald-700 text-white text-xs rounded px-3 py-1">
+              Approve
+            </button>
+            <button hx-post="/approvals/{{ a.id }}/reject"
+                    hx-target="#approvals" hx-swap="innerHTML"
+                    class="bg-rose-100 hover:bg-rose-200 text-rose-800 text-xs rounded px-3 py-1">
+              Reject
+            </button>
+          </div>
+        </div>
+      </li>
+    {% endfor %}
+  </ul>
+{% endif %}

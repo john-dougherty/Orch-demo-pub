@@ -1,0 +1,31 @@
+[project]
+name = "hermes-orchestrator"
+version = "0.1.0"
+description = "Local-first AI orchestrator for SMB operations (demo)"
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.32",
+    "jinja2>=3.1",
+    "python-multipart>=0.0.12",
+    "httpx>=0.27",
+    "pydantic>=2.9",
+    "pydantic-settings>=2.6",
+    "sqlalchemy>=2.0",
+    "python-dotenv>=1.0",
+    "ollama>=0.4",
+    "twilio>=9.3",
+    "openai>=1.55",
+    "rich>=13.9",
+]
+
+[project.optional-dependencies]
+whisper-local = ["faster-whisper>=1.0"]
+dev = ["ruff>=0.7", "pytest>=8.3"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
