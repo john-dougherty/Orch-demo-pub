@@ -3,32 +3,212 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>{% block title %}HermesOrch{% endblock %}</title>
+  <title>{% block title %}Oak &amp; Partners — Intake{% endblock %}</title>
+
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Bodoni+Moda:ital,opsz,wght@0,6..96,400;0,6..96,500;0,6..96,700;1,6..96,400;1,6..96,500&family=Libre+Franklin:ital,wght@0,300;0,400;0,500;0,600;0,700;1,400&display=swap" rel="stylesheet">
+
   <script src="https://cdn.tailwindcss.com"></script>
   <script src="https://unpkg.com/htmx.org@2.0.4"></script>
+
   <style>
+    :root {
+      --ink:        #0f1115;
+      --ink-soft:   #2a2d35;
+      --ink-mute:   #5e6168;
+      --cream:      #f3ecdd;
+      --cream-hi:   #f8f3e6;
+      --cream-lo:   #ebe3d0;
+      --rule:       #1f1f23;
+      --oxblood:    #7a2d2d;
+      --oxblood-hi: #923838;
+      --moss:       #3d5a3b;
+      --moss-hi:    #4a6b48;
+      --amber:      #8a6a1f;
+    }
+
+    html, body {
+      background-color: var(--cream);
+      color: var(--ink);
+      font-family: "Libre Franklin", system-ui, sans-serif;
+      font-feature-settings: "tnum", "ss01";
+      font-weight: 400;
+    }
+
+    /* Paper-grain noise, subtle. Rendered via SVG turbulence, ~20kb base64. */
+    body::before {
+      content: "";
+      position: fixed;
+      inset: 0;
+      pointer-events: none;
+      z-index: 0;
+      opacity: 0.06;
+      mix-blend-mode: multiply;
+      background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='320' height='320'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='2' stitchTiles='stitch'/><feColorMatrix values='0 0 0 0 0  0 0 0 0 0  0 0 0 0 0  0 0 0 0.35 0'/></filter><rect width='100%25' height='100%25' filter='url(%23n)'/></svg>");
+    }
+
+    main, header, section {
+      position: relative;
+      z-index: 1;
+    }
+
+    .display {
+      font-family: "Bodoni Moda", "Bodoni 72", serif;
+      font-optical-sizing: auto;
+      font-weight: 500;
+      letter-spacing: -0.01em;
+    }
+    .display-italic {
+      font-family: "Bodoni Moda", serif;
+      font-style: italic;
+      font-weight: 400;
+    }
+
+    .label {
+      font-family: "Libre Franklin", sans-serif;
+      text-transform: uppercase;
+      letter-spacing: 0.16em;
+      font-size: 10px;
+      font-weight: 500;
+      color: var(--ink-mute);
+    }
+
+    .rule    { border-color: var(--rule);    }
+    .rule-t  { border-top: 1px solid var(--rule); }
+    .rule-b  { border-bottom: 1px solid var(--rule); }
+    .hairline { border-color: rgba(15,17,21,0.14); }
+
+    .panel {
+      background: var(--cream-hi);
+      border: 1px solid rgba(15,17,21,0.14);
+    }
+
+    .ink       { color: var(--ink); }
+    .ink-soft  { color: var(--ink-soft); }
+    .ink-mute  { color: var(--ink-mute); }
+
+    .bg-cream-hi { background-color: var(--cream-hi); }
+    .bg-cream-lo { background-color: var(--cream-lo); }
+
+    .btn-primary {
+      background: var(--ink);
+      color: var(--cream-hi);
+      border: 1px solid var(--ink);
+      letter-spacing: 0.04em;
+      transition: transform .08s ease, background-color .15s ease;
+    }
+    .btn-primary:hover { background: var(--ink-soft); }
+    .btn-primary:active { transform: translateY(1px); }
+
+    .btn-approve {
+      background: var(--moss);
+      color: var(--cream-hi);
+      border: 1px solid var(--moss);
+    }
+    .btn-approve:hover { background: var(--moss-hi); }
+
+    .btn-reject {
+      background: transparent;
+      color: var(--oxblood);
+      border: 1px solid var(--oxblood);
+    }
+    .btn-reject:hover { background: rgba(122,45,45,0.08); }
+
+    .chip {
+      display: inline-block;
+      padding: 2px 8px;
+      border: 1px solid rgba(15,17,21,0.22);
+      background: var(--cream-lo);
+      font-size: 10px;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: var(--ink-soft);
+    }
+    .chip-oxblood { color: var(--oxblood); border-color: rgba(122,45,45,0.35); background: rgba(122,45,45,0.06); }
+    .chip-moss    { color: var(--moss);    border-color: rgba(61,90,59,0.35);  background: rgba(61,90,59,0.06); }
+    .chip-amber   { color: var(--amber);   border-color: rgba(138,106,31,0.35); background: rgba(138,106,31,0.06); }
+
+    .tier-pill {
+      font-family: "Bodoni Moda", serif;
+      font-style: italic;
+      font-size: 11px;
+      color: var(--oxblood);
+    }
+
+    input[type="text"], input[type="number"], textarea, select {
+      background: var(--cream-hi);
+      border: 1px solid rgba(15,17,21,0.2);
+      color: var(--ink);
+      font-family: "Libre Franklin", sans-serif;
+      font-size: 13px;
+    }
+    input:focus, textarea:focus, select:focus {
+      outline: none;
+      border-color: var(--ink);
+      box-shadow: 0 0 0 1px var(--ink);
+    }
+
+    a { color: var(--oxblood); text-decoration: none; }
+    a:hover { color: var(--oxblood-hi); text-decoration: underline; text-underline-offset: 3px; }
+
+    .numeral { font-variant-numeric: tabular-nums; font-feature-settings: "tnum"; }
+
+    .stagger > * { opacity: 0; transform: translateY(4px); animation: rise 520ms cubic-bezier(.2,.7,.2,1) forwards; }
+    .stagger > *:nth-child(1) { animation-delay: 60ms; }
+    .stagger > *:nth-child(2) { animation-delay: 140ms; }
+    .stagger > *:nth-child(3) { animation-delay: 220ms; }
+    .stagger > *:nth-child(4) { animation-delay: 300ms; }
+    @keyframes rise {
+      to { opacity: 1; transform: translateY(0); }
+    }
+
     .htmx-indicator { opacity: 0; transition: opacity .2s; }
     .htmx-request .htmx-indicator { opacity: 1; }
-    .htmx-request.htmx-indicator { opacity: 1; }
   </style>
 </head>
-<body class="bg-slate-50 text-slate-800 min-h-screen">
-  <header class="bg-white border-b border-slate-200">
-    <div class="max-w-7xl mx-auto px-6 py-4 flex items-center justify-between">
-      <div>
-        <div class="text-xs uppercase tracking-widest text-slate-400">HermesOrch</div>
-        <h1 class="text-xl font-semibold">{% block heading %}Dashboard{% endblock %}</h1>
+<body class="min-h-screen">
+
+  <header class="rule-b">
+    <div class="max-w-6xl mx-auto px-10 pt-12 pb-8">
+      <div class="flex items-end justify-between">
+        <div>
+          <div class="label mb-3">Est. {{ firm_name_established|default("MCMLXXI") }} &middot; San Francisco</div>
+          <h1 class="display text-5xl md:text-6xl leading-none">{{ firm_name|default("Oak &amp; Partners") }}<span class="display-italic text-[0.5em] ink-mute ml-3">LLP</span></h1>
+        </div>
+        <div class="text-right">
+          <div class="label mb-2">Intake Ledger</div>
+          <div class="display-italic text-sm ink-soft numeral">{{ today_long|default("") }}</div>
+          <div class="mt-3 text-xs ink-mute">
+            <span class="inline-flex items-center gap-2">
+              <span class="inline-block w-1.5 h-1.5 rounded-full" style="background:var(--moss)"></span>
+              AI intake active &middot; gemma4:31b
+            </span>
+          </div>
+        </div>
       </div>
-      <div class="text-sm text-slate-500">
-        <span class="inline-flex items-center gap-2">
-          <span class="w-2 h-2 rounded-full bg-emerald-500"></span>
-          connected &middot; gemma4:31b
-        </span>
+      <div class="mt-6 border-t rule hairline"></div>
+      <div class="mt-3 flex items-center gap-6 text-xs ink-mute">
+        <span class="label">Section I</span>
+        <span>Matters in Intake</span>
+        <span class="label">Section II</span>
+        <span>Approvals Pending</span>
+        <span class="label">Section III</span>
+        <span>Activity Ledger</span>
       </div>
     </div>
   </header>
-  <main class="max-w-7xl mx-auto px-6 py-6">
+
+  <main class="max-w-6xl mx-auto px-10 py-10">
     {% block body %}{% endblock %}
   </main>
+
+  <footer class="max-w-6xl mx-auto px-10 py-8 rule-t">
+    <div class="flex items-center justify-between text-xs ink-mute">
+      <div class="display-italic">Attorney-client privileged &middot; internal use only</div>
+      <div class="label">HermesOrch</div>
+    </div>
+  </footer>
+
 </body>
 </html>

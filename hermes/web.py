@@ -191,6 +191,8 @@ def dashboard(request: Request) -> HTMLResponse:
         "dashboard.html",
         {
             "firm_name": firm_name,
+            "firm_name_established": "MCMLXXI",
+            "today_long": datetime.utcnow().strftime("%B %-d, %Y"),
             "activity": _activity_payload(),
             "approvals": _approvals_payload(),
             "scenarios": SIMULATED_SCENARIOS,

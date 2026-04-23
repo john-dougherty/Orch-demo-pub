@@ -1,25 +1,37 @@
-<div class="grid grid-cols-1 md:grid-cols-3 gap-4">
+<div class="grid grid-cols-1 md:grid-cols-3 gap-8">
 
-  <div>
-    <h3 class="text-xs uppercase tracking-wider text-slate-400 mb-2">Recent calls</h3>
+  <!-- Calls -->
+  <div class="panel">
+    <div class="px-5 py-3 rule-b flex items-baseline justify-between">
+      <div class="display ink">Calls</div>
+      <div class="label numeral">{{ activity.calls|length }}</div>
+    </div>
     {% if not activity.calls %}
-      <div class="text-sm text-slate-400 py-2">No calls yet.</div>
+      <div class="px-5 py-8 text-center display-italic text-xs ink-mute">No calls recorded.</div>
     {% else %}
-      <ul class="space-y-2">
+      <ul class="divide-y hairline">
         {% for c in activity.calls %}
-          <li class="bg-slate-50 border border-slate-200 rounded p-3 text-xs">
-            <div class="flex justify-between">
-              <span class="font-medium">{{ c.caller_name }}</span>
-              <span class="text-slate-400">{{ c.started_at }}</span>
+          <li class="px-5 py-4 text-sm">
+            <div class="flex items-baseline justify-between gap-2">
+              <span class="display ink">{{ c.caller_name }}</span>
+              <span class="label numeral shrink-0">{{ c.started_at }}</span>
             </div>
-            <div class="text-slate-500">{{ c.caller_phone }}</div>
-            <div class="mt-1 flex gap-2">
-              <span class="inline-block bg-slate-200 text-slate-700 px-1.5 py-0.5 rounded">{{ c.matter_type_guess }}</span>
-              <span class="inline-block bg-slate-200 text-slate-700 px-1.5 py-0.5 rounded">{{ c.urgency }}</span>
-              <span class="inline-block bg-slate-200 text-slate-700 px-1.5 py-0.5 rounded">{{ c.status }}</span>
+            <div class="ink-mute numeral text-xs mt-0.5">{{ c.caller_phone }}</div>
+            <div class="mt-2 flex flex-wrap gap-1.5">
+              {% if c.matter_type_guess and c.matter_type_guess != "—" %}
+                <span class="chip">{{ c.matter_type_guess.replace("_", " ") }}</span>
+              {% endif %}
+              {% if c.urgency and c.urgency != "—" %}
+                {% if c.urgency == "urgent" %}
+                  <span class="chip chip-oxblood">{{ c.urgency }}</span>
+                {% else %}
+                  <span class="chip">{{ c.urgency }}</span>
+                {% endif %}
+              {% endif %}
+              <span class="chip">{{ c.status }}</span>
             </div>
             {% if c.summary %}
-              <div class="mt-1 text-slate-600">{{ c.summary }}</div>
+              <div class="mt-2 ink-soft text-xs leading-relaxed">{{ c.summary }}</div>
             {% endif %}
           </li>
         {% endfor %}
@@ -27,50 +39,68 @@
     {% endif %}
   </div>
 
-  <div>
-    <h3 class="text-xs uppercase tracking-wider text-slate-400 mb-2">Recent emails</h3>
+  <!-- Emails -->
+  <div class="panel">
+    <div class="px-5 py-3 rule-b flex items-baseline justify-between">
+      <div class="display ink">Correspondence</div>
+      <div class="label numeral">{{ activity.emails|length }}</div>
+    </div>
     {% if not activity.emails %}
-      <div class="text-sm text-slate-400 py-2">No emails yet.</div>
+      <div class="px-5 py-8 text-center display-italic text-xs ink-mute">No correspondence drafted.</div>
     {% else %}
-      <ul class="space-y-2">
+      <ul class="divide-y hairline">
         {% for e in activity.emails %}
-          <li class="bg-slate-50 border border-slate-200 rounded p-3 text-xs">
-            <div class="flex justify-between">
-              <span class="font-medium">{{ e.subject }}</span>
-              <span class="text-slate-400">{{ e.created_at }}</span>
+          <li class="px-5 py-4 text-sm">
+            <div class="flex items-baseline justify-between gap-2">
+              <span class="display ink truncate">{{ e.subject }}</span>
+              <span class="label numeral shrink-0">{{ e.created_at }}</span>
             </div>
-            <div class="text-slate-500">to {{ e.to }}</div>
-            <div class="mt-1">
-              <span class="inline-block bg-slate-200 text-slate-700 px-1.5 py-0.5 rounded">{{ e.status }}</span>
+            <div class="ink-mute text-xs numeral mt-0.5">to {{ e.to }}</div>
+            <div class="mt-2">
+              {% if e.status == "sent" %}
+                <span class="chip chip-moss">{{ e.status }}</span>
+              {% elif e.status == "failed" %}
+                <span class="chip chip-oxblood">{{ e.status }}</span>
+              {% else %}
+                <span class="chip chip-amber">{{ e.status }}</span>
+              {% endif %}
             </div>
-            <div class="mt-1 text-slate-600 whitespace-pre-wrap">{{ e.body_preview }}{% if e.body_preview|length == 220 %}…{% endif %}</div>
+            <div class="mt-2 ink-soft text-xs leading-relaxed whitespace-pre-wrap">{{ e.body_preview }}{% if e.body_preview|length == 220 %}…{% endif %}</div>
           </li>
         {% endfor %}
       </ul>
     {% endif %}
   </div>
 
-  <div>
-    <h3 class="text-xs uppercase tracking-wider text-slate-400 mb-2">Recent invoices</h3>
+  <!-- Invoices -->
+  <div class="panel">
+    <div class="px-5 py-3 rule-b flex items-baseline justify-between">
+      <div class="display ink">Billing</div>
+      <div class="label numeral">{{ activity.invoices|length }}</div>
+    </div>
     {% if not activity.invoices %}
-      <div class="text-sm text-slate-400 py-2">No invoices yet.</div>
+      <div class="px-5 py-8 text-center display-italic text-xs ink-mute">No invoices issued.</div>
     {% else %}
-      <ul class="space-y-2">
+      <ul class="divide-y hairline">
         {% for i in activity.invoices %}
-          <li class="bg-slate-50 border border-slate-200 rounded p-3 text-xs">
-            <div class="flex justify-between">
-              <span class="font-medium">{{ i.client }}</span>
-              <span class="text-slate-400">{{ i.created_at }}</span>
+          <li class="px-5 py-4 text-sm">
+            <div class="flex items-baseline justify-between gap-2">
+              <span class="display ink">{{ i.client }}</span>
+              <span class="display-italic numeral ink shrink-0">{{ i.amount }}</span>
             </div>
-            <div class="text-slate-600">{{ i.amount }}</div>
-            <div class="text-slate-500">{{ i.description }}</div>
-            <div class="mt-1 flex items-center gap-2">
-              <span class="inline-block bg-slate-200 text-slate-700 px-1.5 py-0.5 rounded">{{ i.status }}</span>
+            <div class="label numeral mt-0.5">{{ i.created_at }}</div>
+            <div class="mt-1 ink-soft text-xs">{{ i.description }}</div>
+            <div class="mt-2 flex items-center gap-2">
+              {% if i.status == "sent" %}
+                <span class="chip chip-moss">{{ i.status }}</span>
+              {% elif i.status == "failed" %}
+                <span class="chip chip-oxblood">{{ i.status }}</span>
+              {% else %}
+                <span class="chip chip-amber">{{ i.status }}</span>
+              {% endif %}
               {% if i.external_url %}
                 <a href="{{ i.external_url }}" target="_blank" rel="noopener"
-                   class="text-blue-600 hover:underline">
-                  View in QBO{% if i.doc_number %} · #{{ i.doc_number }}{% endif %} ↗
-                </a>
+                   class="text-xs numeral">QBO № {{ i.doc_number }} ↗</a>
               {% endif %}
             </div>
           </li>

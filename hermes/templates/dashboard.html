@@ -1,100 +1,121 @@
 {% extends "base.html" %}
-{% block title %}{{ firm_name }} — HermesOrch{% endblock %}
-{% block heading %}{{ firm_name }}{% endblock %}
+{% block title %}{{ firm_name }} — Intake Ledger{% endblock %}
 
 {% block body %}
-<div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+<div class="stagger space-y-10">
 
-  <!-- Simulate a call -->
-  <section class="bg-white rounded-lg border border-slate-200 p-5 lg:col-span-1">
-    <div class="flex items-center justify-between mb-3">
-      <h2 class="font-semibold text-slate-700">Simulate inbound call</h2>
-      <span class="text-xs text-slate-400">bypasses Twilio</span>
-    </div>
-    <form method="post" action="/simulate/call" class="space-y-3">
-      <label class="block">
-        <span class="text-xs text-slate-500">Scenario preset</span>
-        <select id="scenario" name="scenario"
-                class="mt-1 w-full rounded border-slate-300 text-sm"
-                onchange="fillScenario(this.value)">
-          {% for key, scn in scenarios.items() %}
-            <option value="{{ key }}" {% if key == default_scenario %}selected{% endif %}>{{ scn.label }}</option>
-          {% endfor %}
-          <option value="custom">Custom…</option>
-        </select>
-      </label>
-
-      <label class="block">
-        <span class="text-xs text-slate-500">Caller name</span>
-        <input id="caller_name" name="caller_name" type="text"
-               value="{{ scenarios[default_scenario].caller_name }}"
-               class="mt-1 w-full rounded border-slate-300 text-sm" required>
-      </label>
-
-      <label class="block">
-        <span class="text-xs text-slate-500">Caller phone</span>
-        <input id="caller_phone" name="caller_phone" type="text"
-               value="{{ scenarios[default_scenario].caller_phone }}"
-               class="mt-1 w-full rounded border-slate-300 text-sm" required>
-      </label>
-
-      <label class="block">
-        <span class="text-xs text-slate-500">Transcript</span>
-        <textarea id="transcript" name="transcript" rows="7"
-                  class="mt-1 w-full rounded border-slate-300 text-sm font-mono" required>{{ scenarios[default_scenario].transcript }}</textarea>
-      </label>
-
-      <div class="flex items-center gap-3">
-        <label class="text-xs text-slate-500">Agent mode</label>
-        <select name="mode" class="rounded border-slate-300 text-sm">
-          <option value="native" selected>native (Ollama tool_calls)</option>
-          <option value="json">json (strict-JSON)</option>
-        </select>
+  <!-- SECTION I — Intake -->
+  <section>
+    <div class="flex items-baseline justify-between mb-4">
+      <div>
+        <div class="label">Section I</div>
+        <h2 class="display text-2xl ink">Matters in Intake</h2>
       </div>
+      <div class="display-italic text-xs ink-mute">Simulate an inbound call below.<br/>Bypass Twilio; the agent handles post-call.</div>
+    </div>
 
-      <button type="submit"
-              class="w-full bg-slate-800 hover:bg-slate-900 text-white rounded px-3 py-2 text-sm font-medium">
-        Run intake (~10–20s)
-      </button>
-    </form>
+    <div class="panel p-8">
+      <form method="post" action="/simulate/call" class="grid grid-cols-1 md:grid-cols-3 gap-6">
 
-    <script>
-      const SCENARIOS = {{ scenarios|tojson }};
-      function fillScenario(key) {
-        if (key === 'custom') return;
-        const s = SCENARIOS[key];
-        if (!s) return;
-        document.getElementById('caller_name').value = s.caller_name;
-        document.getElementById('caller_phone').value = s.caller_phone;
-        document.getElementById('transcript').value = s.transcript;
-      }
-    </script>
+        <div class="md:col-span-1 space-y-4">
+          <div>
+            <div class="label mb-2">Scenario</div>
+            <select id="scenario" name="scenario" class="w-full py-2 px-3"
+                    onchange="fillScenario(this.value)">
+              {% for key, scn in scenarios.items() %}
+                <option value="{{ key }}" {% if key == default_scenario %}selected{% endif %}>{{ scn.label }}</option>
+              {% endfor %}
+              <option value="custom">Custom…</option>
+            </select>
+          </div>
+          <div>
+            <div class="label mb-2">Caller</div>
+            <input id="caller_name" name="caller_name" type="text"
+                   value="{{ scenarios[default_scenario].caller_name }}"
+                   class="w-full py-2 px-3" required>
+          </div>
+          <div>
+            <div class="label mb-2">Number</div>
+            <input id="caller_phone" name="caller_phone" type="text"
+                   value="{{ scenarios[default_scenario].caller_phone }}"
+                   class="w-full py-2 px-3 numeral" required>
+          </div>
+          <div>
+            <div class="label mb-2">Agent mode</div>
+            <select name="mode" class="w-full py-2 px-3">
+              <option value="native" selected>Native (Ollama tool_calls)</option>
+              <option value="json">JSON (strict-output)</option>
+            </select>
+          </div>
+        </div>
+
+        <div class="md:col-span-2 space-y-4">
+          <div>
+            <div class="flex items-baseline justify-between mb-2">
+              <span class="label">Transcript</span>
+              <span class="display-italic text-xs ink-mute">as recorded</span>
+            </div>
+            <textarea id="transcript" name="transcript" rows="9"
+                      class="w-full py-3 px-4 leading-relaxed" required>{{ scenarios[default_scenario].transcript }}</textarea>
+          </div>
+          <div class="flex items-center justify-between">
+            <div class="display-italic text-xs ink-mute">
+              Running the agent takes ~20–30&thinsp;s. Gemma drafts; you approve.
+            </div>
+            <button type="submit" class="btn-primary display px-8 py-3 text-sm">
+              File Intake →
+            </button>
+          </div>
+        </div>
+      </form>
+
+      <script>
+        const SCENARIOS = {{ scenarios|tojson }};
+        function fillScenario(key) {
+          if (key === 'custom') return;
+          const s = SCENARIOS[key];
+          if (!s) return;
+          document.getElementById('caller_name').value   = s.caller_name;
+          document.getElementById('caller_phone').value  = s.caller_phone;
+          document.getElementById('transcript').value    = s.transcript;
+        }
+      </script>
+    </div>
   </section>
 
-  <!-- Pending approvals -->
-  <section class="bg-white rounded-lg border border-slate-200 p-5 lg:col-span-2">
-    <div class="flex items-center justify-between mb-3">
-      <h2 class="font-semibold text-slate-700">Pending approvals
-        <span class="ml-2 text-xs text-slate-400">Tier-2 actions awaiting sign-off</span>
-      </h2>
-      <button class="text-xs text-slate-500 hover:text-slate-800"
-              hx-get="/partials/approvals" hx-target="#approvals" hx-swap="innerHTML">refresh</button>
+  <!-- SECTION II — Approvals -->
+  <section>
+    <div class="flex items-baseline justify-between mb-4">
+      <div>
+        <div class="label">Section II</div>
+        <h2 class="display text-2xl ink">Approvals Pending</h2>
+      </div>
+      <button class="label hover:underline"
+              hx-get="/partials/approvals" hx-target="#approvals" hx-swap="innerHTML">
+        Refresh
+      </button>
     </div>
-    <div id="approvals">
+    <div id="approvals" class="panel">
       {% include "_approvals.html" %}
     </div>
   </section>
 
-  <!-- Activity feed -->
-  <section class="bg-white rounded-lg border border-slate-200 p-5 lg:col-span-3">
-    <div class="flex items-center justify-between mb-3">
-      <h2 class="font-semibold text-slate-700">Activity</h2>
-      <button class="text-xs text-slate-500 hover:text-slate-800"
-              hx-get="/partials/activity" hx-target="#activity" hx-swap="innerHTML">refresh</button>
+  <!-- SECTION III — Activity Ledger -->
+  <section>
+    <div class="flex items-baseline justify-between mb-4">
+      <div>
+        <div class="label">Section III</div>
+        <h2 class="display text-2xl ink">Activity Ledger</h2>
+      </div>
+      <button class="label hover:underline"
+              hx-get="/partials/activity" hx-target="#activity" hx-swap="innerHTML">
+        Refresh
+      </button>
     </div>
     <div id="activity">
       {% include "_activity.html" %}
     </div>
   </section>
+
 </div>
 {% endblock %}
