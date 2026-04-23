@@ -322,21 +322,43 @@ class SendEmail(Tool):
     tier = 2
 
     def execute(self, args, session_id):
-        # Tier-2 execution runs ONLY after approval. The loop normally halts
-        # before reaching here; this path is invoked by the approval handler.
+        from datetime import datetime as _dt
+
+        from hermes.email_sender import email_sender
+
+        # Load the drafted email.
         with session_scope() as s:
             email = s.get(Email, args["email_id"])
             if not email:
                 return ToolResult(ok=False, error=f"no email {args['email_id']}")
-            # Actual SMTP/Gmail send happens in a later task. For now, mark sent.
-            email.status = "sent"
-            from datetime import datetime as _dt
-            email.sent_at = _dt.utcnow()
-            s.flush()
-            return ToolResult(
-                ok=True,
-                data={"email_id": email.id, "status": "sent", "note": "stub send"},
-            )
+            to_address = email.to_address
+            subject = email.subject
+            body = email.body
+            email_id_local = email.id
+
+        result = email_sender.send(to_address=to_address, subject=subject, body=body)
+
+        with session_scope() as s:
+            email = s.get(Email, email_id_local)
+            if email is None:
+                return ToolResult(ok=False, error="email vanished mid-send")
+            if result.ok:
+                email.status = "sent"
+                email.sent_at = _dt.utcnow()
+            else:
+                email.status = "failed"
+
+        return ToolResult(
+            ok=result.ok,
+            error=result.error,
+            data={
+                "email_id": email_id_local,
+                "status": "sent" if result.ok else "failed",
+                "delivered": result.delivered,
+                "redirected_to": result.redirected_to,
+                "message_id": result.message_id,
+            },
+        )
 
 
 @register
@@ -443,6 +465,342 @@ class CreateInvoice(Tool):
         )
 
 
+# --- Tier 1 read tools for Telegram operator queries ---
+
+
+@register
+class ListPendingApprovals(Tool):
+    name = "list_pending_approvals"
+    description = (
+        "List all Tier-2 actions currently waiting for operator approval. "
+        "Use to answer 'what do I need to approve?' or 'what's pending?'"
+    )
+    parameters = {"type": "object", "properties": {}, "required": []}
+    tier = 1
+
+    def execute(self, args, session_id):
+        from sqlalchemy import desc
+        with session_scope() as s:
+            rows = s.scalars(
+                select(ApprovalRequest)
+                .where(ApprovalRequest.status == "pending")
+                .order_by(desc(ApprovalRequest.created_at))
+                .limit(20)
+            ).all()
+            out = []
+            for r in rows:
+                entry = {
+                    "approval_id": r.id,
+                    "tool_name": r.tool_name,
+                    "created_at": r.created_at.isoformat(),
+                    "args": r.tool_args or {},
+                }
+                if r.tool_name == "send_email":
+                    e = s.get(Email, (r.tool_args or {}).get("email_id"))
+                    if e:
+                        entry["email_to"] = e.to_address
+                        entry["email_subject"] = e.subject
+                if r.tool_name == "create_invoice":
+                    cid = (r.tool_args or {}).get("client_id")
+                    c = s.get(Client, cid) if cid else None
+                    entry["client_name"] = c.display_name if c else None
+                    entry["amount_dollars"] = (r.tool_args or {}).get("amount_dollars")
+                out.append(entry)
+            return ToolResult(ok=True, data={"approvals": out})
+
+
+@register
+class ListRecentCalls(Tool):
+    name = "list_recent_calls"
+    description = (
+        "List the most recent phone calls handled by the intake system, "
+        "newest first. Each call returns caller, matter type, urgency, "
+        "and a short summary."
+    )
+    parameters = {
+        "type": "object",
+        "properties": {
+            "limit": {"type": "integer", "description": "Max results (default 5)"}
+        },
+        "required": [],
+    }
+    tier = 1
+
+    def execute(self, args, session_id):
+        from sqlalchemy import desc
+        limit = int(args.get("limit") or 5)
+        with session_scope() as s:
+            rows = s.scalars(
+                select(Call).order_by(desc(Call.started_at)).limit(limit)
+            ).all()
+            return ToolResult(
+                ok=True,
+                data={
+                    "calls": [
+                        {
+                            "call_id": c.id,
+                            "caller_name": c.caller_name,
+                            "caller_phone": c.caller_phone,
+                            "matter_type": c.matter_type_guess,
+                            "urgency": c.urgency,
+                            "summary": c.summary,
+                            "started_at": c.started_at.isoformat() if c.started_at else None,
+                        }
+                        for c in rows
+                    ]
+                },
+            )
+
+
+@register
+class ListRecentInvoices(Tool):
+    name = "list_recent_invoices"
+    description = (
+        "List the most recent invoices drafted by the system, newest first. "
+        "Includes QBO invoice number + URL when available."
+    )
+    parameters = {
+        "type": "object",
+        "properties": {
+            "limit": {"type": "integer", "description": "Max results (default 5)"}
+        },
+        "required": [],
+    }
+    tier = 1
+
+    def execute(self, args, session_id):
+        from sqlalchemy import desc
+        limit = int(args.get("limit") or 5)
+        with session_scope() as s:
+            rows = s.scalars(
+                select(Invoice).order_by(desc(Invoice.created_at)).limit(limit)
+            ).all()
+            out = []
+            for i in rows:
+                c = s.get(Client, i.client_id) if i.client_id else None
+                out.append(
+                    {
+                        "invoice_id": i.id,
+                        "client_name": c.display_name if c else None,
+                        "amount_dollars": round(i.amount_cents / 100, 2),
+                        "description": i.description,
+                        "status": i.status,
+                        "qbo_invoice_id": i.external_invoice_id,
+                        "qbo_invoice_url": i.external_invoice_url,
+                    }
+                )
+            return ToolResult(ok=True, data={"invoices": out})
+
+
+@register
+class SummarizeDay(Tool):
+    name = "summarize_day"
+    description = (
+        "Summarize activity in the last 24 hours: how many calls came in, "
+        "how many emails drafted/sent, how many invoices, what's pending."
+    )
+    parameters = {"type": "object", "properties": {}, "required": []}
+    tier = 1
+
+    def execute(self, args, session_id):
+        from datetime import datetime, timedelta
+        cutoff = datetime.utcnow() - timedelta(hours=24)
+        with session_scope() as s:
+            calls = s.scalars(select(Call).where(Call.started_at >= cutoff)).all()
+            emails = s.scalars(select(Email).where(Email.created_at >= cutoff)).all()
+            invoices = s.scalars(
+                select(Invoice).where(Invoice.created_at >= cutoff)
+            ).all()
+            pending = s.scalars(
+                select(ApprovalRequest).where(ApprovalRequest.status == "pending")
+            ).all()
+            return ToolResult(
+                ok=True,
+                data={
+                    "window_hours": 24,
+                    "calls_handled": len(calls),
+                    "emails_drafted": len(emails),
+                    "emails_sent": sum(1 for e in emails if e.status == "sent"),
+                    "invoices_created": len(invoices),
+                    "approvals_pending": len(pending),
+                    "pending_tool_names": sorted({p.tool_name for p in pending}),
+                },
+            )
+
+
+@register
+class QBOCustomerLookup(Tool):
+    name = "qbo_customer_lookup"
+    description = (
+        "Look up customers in QuickBooks Online by name fragment. Returns "
+        "QBO customer IDs and contact info."
+    )
+    parameters = {
+        "type": "object",
+        "properties": {"query": {"type": "string"}},
+        "required": ["query"],
+    }
+    tier = 1
+
+    def execute(self, args, session_id):
+        from hermes.qbo import qbo
+        if not qbo.configured:
+            return ToolResult(ok=False, error="QBO not configured")
+        q = (args.get("query") or "").replace("'", "\\'")
+        resp = qbo._request(
+            "GET",
+            f"/v3/company/{qbo._realm_id}/query",
+            params={
+                "query": f"select * from Customer where DisplayName like '%{q}%' maxresults 10",
+                "minorversion": "73",
+            },
+        )
+        if resp.status_code != 200:
+            return ToolResult(ok=False, error=f"QBO error {resp.status_code}: {resp.text[:300]}")
+        rows = resp.json().get("QueryResponse", {}).get("Customer", [])
+        return ToolResult(
+            ok=True,
+            data={
+                "customers": [
+                    {
+                        "qbo_customer_id": str(c["Id"]),
+                        "display_name": c.get("DisplayName"),
+                        "email": (c.get("PrimaryEmailAddr") or {}).get("Address"),
+                        "phone": (c.get("PrimaryPhone") or {}).get("FreeFormNumber"),
+                        "balance": c.get("Balance"),
+                    }
+                    for c in rows
+                ]
+            },
+        )
+
+
+@register
+class QBOInvoiceStatus(Tool):
+    name = "qbo_invoice_status"
+    description = (
+        "Check the status of a QuickBooks Online invoice: total, balance, "
+        "paid/unpaid, due date."
+    )
+    parameters = {
+        "type": "object",
+        "properties": {"qbo_invoice_id": {"type": "string"}},
+        "required": ["qbo_invoice_id"],
+    }
+    tier = 1
+
+    def execute(self, args, session_id):
+        from hermes.qbo import qbo
+        if not qbo.configured:
+            return ToolResult(ok=False, error="QBO not configured")
+        inv_id = str(args["qbo_invoice_id"])
+        resp = qbo._request(
+            "GET",
+            f"/v3/company/{qbo._realm_id}/invoice/{inv_id}",
+            params={"minorversion": "73"},
+        )
+        if resp.status_code != 200:
+            return ToolResult(ok=False, error=f"QBO error {resp.status_code}")
+        inv = resp.json()["Invoice"]
+        total = float(inv.get("TotalAmt") or 0)
+        balance = float(inv.get("Balance") or 0)
+        return ToolResult(
+            ok=True,
+            data={
+                "qbo_invoice_id": inv_id,
+                "doc_number": inv.get("DocNumber"),
+                "customer": (inv.get("CustomerRef") or {}).get("name"),
+                "total_dollars": total,
+                "balance_dollars": balance,
+                "paid": balance == 0 and total > 0,
+                "due_date": inv.get("DueDate"),
+                "invoice_url": f"https://sandbox.qbo.intuit.com/app/invoice?txnId={inv_id}",
+            },
+        )
+
+
+@register
+class ApproveRequest(Tool):
+    name = "approve_request"
+    description = (
+        "Approve a pending Tier-2 action by its approval_id. This will "
+        "execute the queued tool (send the email, create the invoice, etc.) "
+        "immediately. Use only when the operator explicitly confirms."
+    )
+    parameters = {
+        "type": "object",
+        "properties": {"approval_id": {"type": "integer"}},
+        "required": ["approval_id"],
+    }
+    tier = 1  # the user IS the approver — no further gate.
+
+    def execute(self, args, session_id):
+        from datetime import datetime
+        aid = args.get("approval_id")
+        with session_scope() as s:
+            req = s.get(ApprovalRequest, aid)
+            if not req:
+                return ToolResult(ok=False, error=f"no approval #{aid}")
+            if req.status != "pending":
+                return ToolResult(
+                    ok=False,
+                    error=f"approval #{aid} is {req.status}, not pending",
+                )
+            tool_name = req.tool_name
+            tool_args = req.tool_args or {}
+
+        tool = get_tool(tool_name)
+        if tool is None:
+            return ToolResult(ok=False, error=f"unknown tool {tool_name}")
+        result = tool.execute(tool_args, session_id)
+
+        with session_scope() as s:
+            req = s.get(ApprovalRequest, aid)
+            req.status = "executed" if result.ok else "rejected"
+            req.result = {"ok": result.ok, "data": result.data, "error": result.error}
+            req.decided_at = datetime.utcnow()
+            req.decided_by = "telegram"
+
+        return ToolResult(
+            ok=result.ok,
+            error=result.error,
+            data={
+                "approval_id": aid,
+                "tool_name": tool_name,
+                "executed": result.ok,
+                "result": result.data,
+            },
+        )
+
+
+@register
+class RejectRequest(Tool):
+    name = "reject_request"
+    description = "Reject a pending Tier-2 approval by its approval_id."
+    parameters = {
+        "type": "object",
+        "properties": {"approval_id": {"type": "integer"}},
+        "required": ["approval_id"],
+    }
+    tier = 1
+
+    def execute(self, args, session_id):
+        from datetime import datetime
+        aid = args.get("approval_id")
+        with session_scope() as s:
+            req = s.get(ApprovalRequest, aid)
+            if not req:
+                return ToolResult(ok=False, error=f"no approval #{aid}")
+            if req.status != "pending":
+                return ToolResult(
+                    ok=False, error=f"approval #{aid} is {req.status}, not pending"
+                )
+            req.status = "rejected"
+            req.decided_at = datetime.utcnow()
+            req.decided_by = "telegram"
+        return ToolResult(ok=True, data={"approval_id": aid, "status": "rejected"})
+
+
 # --- audit + approval helpers ---
 
 
@@ -486,4 +844,35 @@ def enqueue_for_approval(
         )
         s.add(req)
         s.flush()
-        return req.id
+        req_id = req.id
+
+        # Build a preview for the Telegram notification while the session is open.
+        preview_bits: list[str] = []
+        if tool_name == "send_email":
+            e = s.get(Email, (tool_args or {}).get("email_id"))
+            if e:
+                preview_bits.append(f"to: {e.to_address}")
+                preview_bits.append(f"subject: {e.subject}")
+        elif tool_name == "create_invoice":
+            cid = (tool_args or {}).get("client_id")
+            c = s.get(Client, cid) if cid else None
+            if c:
+                preview_bits.append(f"client: {c.display_name}")
+            amt = (tool_args or {}).get("amount_dollars")
+            if amt is not None:
+                preview_bits.append(f"amount: ${float(amt):.2f}")
+
+    # Outside the session — lazy import to avoid any import-time cycles.
+    try:
+        from hermes.telegram_bot import notify_allowlist
+        preview = " · ".join(preview_bits) if preview_bits else ""
+        msg = (
+            f"📋 Approval needed #{req_id}: {tool_name}"
+            + (f"\n{preview}" if preview else "")
+            + f"\n\nReply to approve: 'approve {req_id}'  ·  reject: 'reject {req_id}'"
+        )
+        notify_allowlist(msg)
+    except Exception:
+        pass  # never let notification failure break the queue write
+
+    return req_id

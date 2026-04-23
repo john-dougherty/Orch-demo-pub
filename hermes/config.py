@@ -32,6 +32,17 @@ class Settings(BaseSettings):
     qbo_realm_id: str = ""
     qbo_environment: str = "sandbox"  # "sandbox" | "production"
 
+    smtp_host: str = "smtp.gmail.com"
+    smtp_port: int = 587
+    smtp_user: str = ""
+    smtp_password: str = ""
+    smtp_from_address: str = ""  # defaults to smtp_user if empty
+    smtp_from_name: str = "Oak & Partners Intake"
+    email_demo_redirect: str = ""  # if set, all outbound reroutes here
+
+    telegram_bot_token: str = ""
+    telegram_allowed_chat_ids: str = ""  # comma-separated list of chat IDs
+
     database_url: str = "sqlite:///./data/orchestrator.db"
     public_base_url: str = "http://localhost:8000"
     log_level: str = "INFO"

@@ -70,10 +70,10 @@ Call them when appropriate; do not wait for confirmation — the system handles 
 """
 
 
-def build_json_system_prompt(tools: list[Tool]) -> str:
+def build_json_system_prompt_from_base(base: str, tools: list[Tool]) -> str:
     tools_block = "\n".join(t.to_prompt_block() for t in tools)
     return (
-        SYSTEM_PROMPT_BASE
+        base
         + "\n\nTools available:\n"
         + tools_block
         + "\n\nOUTPUT FORMAT — respond with ONLY a single JSON object, no prose:\n"
@@ -84,6 +84,11 @@ def build_json_system_prompt(tools: list[Tool]) -> str:
         + '  {"thought": "<brief reasoning>", "final_response": "<text for the user>"}\n'
         + "Never include both tool_calls and final_response. Never include markdown fences."
     )
+
+
+def build_json_system_prompt(tools: list[Tool]) -> str:
+    # Back-compat shim.
+    return build_json_system_prompt_from_base(SYSTEM_PROMPT_BASE, tools)
 
 
 _JSON_BLOCK_RE = re.compile(r"\{.*\}", re.DOTALL)
@@ -105,6 +110,17 @@ def _extract_json(text: str) -> dict[str, Any]:
         return json.loads(m.group(0))
 
 
+@dataclass
+class AgentConfig:
+    """Per-entry-point overrides. Share the registry, diverge everything else."""
+    mode: AgentMode = AgentMode.NATIVE
+    max_iters: int = 8
+    system_prompt: str | None = None  # None → SYSTEM_PROMPT_BASE
+    tool_allowlist: list[str] | None = None  # None → all registered tools
+    halt_on_tier2: bool = False
+    temperature: float = 0.3
+
+
 def run_agent(
     user_input: str,
     *,
@@ -113,15 +129,28 @@ def run_agent(
     session_id: str | None = None,
     extra_context: str | None = None,
     halt_on_tier2: bool = False,
+    config: AgentConfig | None = None,
 ) -> AgentRun:
+    # Config overrides individual kwargs when present.
+    if config is not None:
+        mode = config.mode
+        max_iters = config.max_iters
+        halt_on_tier2 = config.halt_on_tier2
+
     session_id = session_id or uuid.uuid4().hex[:12]
-    tools = all_tools()
+    all_registered = all_tools()
+    if config and config.tool_allowlist is not None:
+        allow = set(config.tool_allowlist)
+        tools = [t for t in all_registered if t.name in allow]
+    else:
+        tools = all_registered
     run = AgentRun(session_id=session_id, mode=mode)
 
+    base_prompt = (config.system_prompt if config and config.system_prompt else SYSTEM_PROMPT_BASE)
     if mode == AgentMode.JSON:
-        system_prompt = build_json_system_prompt(tools)
+        system_prompt = build_json_system_prompt_from_base(base_prompt, tools)
     else:
-        system_prompt = SYSTEM_PROMPT_BASE
+        system_prompt = base_prompt
 
     messages: list[dict[str, Any]] = [{"role": "system", "content": system_prompt}]
     if extra_context:

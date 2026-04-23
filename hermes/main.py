@@ -3,6 +3,7 @@ from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware
 
 from hermes.config import settings
 from hermes.db import init_db
+from hermes.telegram_bot import router as telegram_router
 from hermes.twilio_voice import router as twilio_router
 from hermes.web import router as web_router
 
@@ -29,3 +30,4 @@ def healthz() -> dict:
 
 app.include_router(web_router)
 app.include_router(twilio_router)
+app.include_router(telegram_router)
