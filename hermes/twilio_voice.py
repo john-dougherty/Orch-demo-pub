@@ -43,9 +43,8 @@ GREETING = (
 )
 
 REPROMPT_FOR_EMAIL = (
-    "Thank you. I want to make sure we can follow up. Could you share your "
-    "email address? You are welcome to spell it out — for example, 'a m a r a "
-    "at post dot example'."
+    "Thank you. I want to make sure we can follow up. Please say your email "
+    "address naturally — for example, 'jane at gmail dot com'. Take your time."
 )
 
 REPROMPT_ON_SILENCE = (
@@ -73,7 +72,16 @@ VOICE = settings.tts_voice_id or "Polly.Joanna-Neural"
 
 # --- email extraction from spoken transcript ---
 
-_EMAIL_RE = re.compile(r"\b([a-z0-9][a-z0-9._+-]*)@([a-z0-9][a-z0-9.-]*\.[a-z]{2,})\b")
+# TLD allowlist + non-greedy domain capture means `assist@hotmail.com.thank`
+# gets parsed as `assist@hotmail.com` (stopping at the first real TLD),
+# not treated as a single absurd domain.
+_KNOWN_TLDS = (
+    r"(?:com|net|org|co|io|ai|edu|gov|mil|info|biz|me|us|uk|ca|au|de|fr|"
+    r"jp|it|es|nl|ru|br|in|mx|cn|se|no|dk|fi|pl|cz|tv|app|dev|xyz|example)"
+)
+_EMAIL_RE = re.compile(
+    rf"\b([a-z0-9][a-z0-9._+-]*)@([a-z0-9][a-z0-9.-]*?\.{_KNOWN_TLDS})\b"
+)
 
 
 def extract_email(text: str) -> str | None:
@@ -91,12 +99,13 @@ def extract_email(text: str) -> str | None:
     m = _EMAIL_RE.search(lowered)
     if m:
         return m.group(0)
-    # Fall back to spoken-form substitution.
+    # Fall back to spoken-form substitution. Deliberately NOT collapsing
+    # `\s*\.\s*` because that eats sentence boundaries (e.g. "hotmail.com.
+    # thank you" → "hotmail.com.thank you" → bogus domain match).
     t = " " + lowered + " "
     t = re.sub(r"\s+(?:at)\s+", "@", t)
     t = re.sub(r"\s+(?:dot|period|point)\s+", ".", t)
     t = re.sub(r"\s*@\s*", "@", t)
-    t = re.sub(r"\s*\.\s*", ".", t)
     m = _EMAIL_RE.search(t)
     return m.group(0) if m else None
 
@@ -132,11 +141,27 @@ def _gather(action: str, say_text: str) -> VoiceResponse:
         input="speech",
         action=action,
         method="POST",
-        speech_timeout="auto",
+        # Explicit numeric speech_timeout tolerates natural pauses far better
+        # than Twilio's aggressive "auto" silence detection.
+        speech_timeout="4",
         speech_model="phone_call",
+        # Enhanced model is ~4× the cost of standard phone_call but noticeably
+        # more accurate on proper nouns and structured strings like emails.
+        # The delta is pennies per call and the accuracy gain is load-bearing
+        # for a demo.
+        enhanced="true",
         language="en-US",
-        timeout=10,  # wait 10s for speech to START after the prompt ends
-        max_speech_time=60,  # let the caller speak up to 60s once started
+        # `hints` biases STT toward recognizing domain/keyword tokens that
+        # are common in intake calls. Comma-separated string; each hint can
+        # be a single word or short phrase.
+        hints=(
+            "at, dot, email, my email, my email address, "
+            "gmail, yahoo, hotmail, outlook, icloud, aol, proton, fastmail, "
+            "com, org, net, io, co, edu, "
+            "my name is, my phone number is, call me back, consultation"
+        ),
+        timeout=15,          # wait 15s for speech to START after the prompt
+        max_speech_time=60,  # up to 60s once speaking
     )
     g.say(say_text, voice=VOICE)
     vr.append(g)

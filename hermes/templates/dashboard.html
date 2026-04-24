@@ -95,7 +95,11 @@
         Refresh
       </button>
     </div>
-    <div id="approvals" class="panel">
+    <div id="approvals"
+         class="panel"
+         hx-get="/partials/approvals"
+         hx-trigger="every 5s"
+         hx-swap="innerHTML">
       {% include "_approvals.html" %}
     </div>
   </section>
@@ -112,7 +116,10 @@
         Refresh
       </button>
     </div>
-    <div id="activity">
+    <div id="activity"
+         hx-get="/partials/activity"
+         hx-trigger="every 5s"
+         hx-swap="innerHTML">
       {% include "_activity.html" %}
     </div>
   </section>
