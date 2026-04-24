@@ -1,27 +1,27 @@
 """Twilio Voice webhooks and post-call agent handoff.
 
-Flow (v1, single-turn intake):
+Multi-turn intake (v2):
 
-  1. POST /webhook/twilio/voice     — call arrives. We greet + <Gather> speech.
-  2. POST /webhook/twilio/gather    — Twilio finished transcribing. We persist
-                                      the transcript, say goodbye, <Hangup>.
-                                      The post-call agent run is kicked off
-                                      as a BackgroundTask (fire-and-forget).
-  3. POST /webhook/twilio/status    — Twilio's call-status callback (optional);
-                                      used to capture duration and final state.
-
-A multi-turn conversation is a Task 4b upgrade — we deliberately stop at one
-gather to keep the demo's moving parts small.
+  1. POST /webhook/twilio/voice       — call arrives. Greet + initial <Gather>.
+  2. POST /webhook/twilio/gather      — first utterance. We accumulate the
+                                        transcript on the Call row. If we
+                                        have the caller's email, close;
+                                        otherwise re-prompt specifically for
+                                        the email address (spell-out invited).
+  3. POST /webhook/twilio/gather?state=email — second utterance. Whether or
+                                        not we found an email, we close the
+                                        call here (no infinite loops).
+                                        Background agent runs on aggregate.
+  4. POST /webhook/twilio/status      — Twilio's call-status callback.
 """
 
 from __future__ import annotations
 
-import asyncio
 import logging
+import re
 from datetime import datetime
-from urllib.parse import urlencode
 
-from fastapi import APIRouter, BackgroundTasks, Form, Header, HTTPException, Request
+from fastapi import APIRouter, BackgroundTasks, HTTPException, Request
 from fastapi.responses import Response
 from sqlalchemy import select
 from twilio.request_validator import RequestValidator
@@ -38,18 +38,29 @@ router = APIRouter()
 
 GREETING = (
     "Thank you for calling Oak and Partners. This is our AI intake assistant. "
-    "After the tone, please share your name, the best way to reach you, and a "
-    "brief description of your legal matter. Take your time — I am listening."
+    "After the tone, please share your name, the best email to reach you at, "
+    "and a brief description of your legal matter. Take your time."
 )
 
-REPROMPT = (
-    "I did not catch that. When you are ready, please share your name, the best "
-    "way to reach you, and a brief description of your matter."
+REPROMPT_FOR_EMAIL = (
+    "Thank you. I want to make sure we can follow up. Could you share your "
+    "email address? You are welcome to spell it out — for example, 'a m a r a "
+    "at post dot example'."
 )
 
-FAREWELL = (
+REPROMPT_ON_SILENCE = (
+    "I did not catch that. When you are ready, please share your name, email, "
+    "and a brief description of your matter."
+)
+
+FAREWELL_COMPLETE = (
     "Thank you. I have recorded your matter. An attorney will be in touch "
     "within one business day. Goodbye."
+)
+
+FAREWELL_INCOMPLETE = (
+    "Thank you. I will flag your matter for follow-up and someone from our "
+    "team will reach out on this number. Goodbye."
 )
 
 FAREWELL_NO_SPEECH = (
@@ -58,6 +69,36 @@ FAREWELL_NO_SPEECH = (
 )
 
 VOICE = settings.tts_voice_id or "Polly.Joanna-Neural"
+
+
+# --- email extraction from spoken transcript ---
+
+_EMAIL_RE = re.compile(r"\b([a-z0-9][a-z0-9._+-]*)@([a-z0-9][a-z0-9.-]*\.[a-z]{2,})\b")
+
+
+def extract_email(text: str) -> str | None:
+    """Pull an email address out of a spoken Twilio transcript.
+
+    Priority:
+      1. A LITERAL email already present (`foo@bar.com`) — most reliable.
+         This runs BEFORE any spoken-form substitution so we don't corrupt
+         an already-good address by turning nearby ' at ' into '@'.
+      2. Spoken form — 'amara at post dot example' → 'amara@post.example'.
+    """
+    if not text:
+        return None
+    lowered = text.lower()
+    m = _EMAIL_RE.search(lowered)
+    if m:
+        return m.group(0)
+    # Fall back to spoken-form substitution.
+    t = " " + lowered + " "
+    t = re.sub(r"\s+(?:at)\s+", "@", t)
+    t = re.sub(r"\s+(?:dot|period|point)\s+", ".", t)
+    t = re.sub(r"\s*@\s*", "@", t)
+    t = re.sub(r"\s*\.\s*", ".", t)
+    m = _EMAIL_RE.search(t)
+    return m.group(0) if m else None
 
 
 # --- signature validation (optional, on by default) ---
@@ -69,26 +110,44 @@ def _validator() -> RequestValidator | None:
 
 
 async def _validate(request: Request) -> None:
-    """Raise 403 if the Twilio-Signature header doesn't check out.
-
-    Relies on the URL Twilio saw. Behind ngrok/CF tunnels this is the public
-    URL — FastAPI sees the same via x-forwarded-proto/host if the tunnel sets
-    them. We rebuild using request.url which preserves host from the forwarded
-    headers starlette honors by default with ProxyHeadersMiddleware.
-    """
     val = _validator()
     if val is None:
-        return  # not configured → skip (useful for local dev)
+        return
     sig = request.headers.get("X-Twilio-Signature", "")
     if not sig:
         raise HTTPException(status_code=403, detail="missing Twilio-Signature")
-
     url = str(request.url)
     form = await request.form()
     params = {k: v for k, v in form.multi_items()}
     if not val.validate(url, params, sig):
         log.warning("Twilio signature failed for %s", url)
         raise HTTPException(status_code=403, detail="invalid Twilio-Signature")
+
+
+# --- TwiML helpers ---
+
+def _gather(action: str, say_text: str) -> VoiceResponse:
+    vr = VoiceResponse()
+    g = Gather(
+        input="speech",
+        action=action,
+        method="POST",
+        speech_timeout="auto",
+        speech_model="phone_call",
+        language="en-US",
+        timeout=10,  # wait 10s for speech to START after the prompt ends
+        max_speech_time=60,  # let the caller speak up to 60s once started
+    )
+    g.say(say_text, voice=VOICE)
+    vr.append(g)
+    return vr
+
+
+def _say_and_hangup(text: str) -> VoiceResponse:
+    vr = VoiceResponse()
+    vr.say(text, voice=VOICE)
+    vr.hangup()
+    return vr
 
 
 # --- routes ---
@@ -101,7 +160,6 @@ async def voice(request: Request) -> Response:
     from_number = form.get("From") or ""
     to_number = form.get("To") or ""
 
-    # Create a Call row (or reuse if a retry fires the same SID).
     with session_scope() as s:
         existing = s.scalar(select(Call).where(Call.twilio_sid == call_sid)) if call_sid else None
         if existing is None:
@@ -118,21 +176,7 @@ async def voice(request: Request) -> Response:
 
     log.info("inbound call %s from %s to %s", call_sid, from_number, to_number)
 
-    vr = VoiceResponse()
-    gather = Gather(
-        input="speech",
-        action="/webhook/twilio/gather",
-        method="POST",
-        speech_timeout="auto",
-        speech_model="phone_call",
-        language="en-US",
-        # 30s hard cap on listening so a silent line can't hang forever.
-        timeout=30,
-    )
-    gather.say(GREETING, voice=VOICE)
-    vr.append(gather)
-
-    # Fallthrough if Gather times out with no speech → one reprompt, then bye.
+    vr = _gather(action="/webhook/twilio/gather", say_text=GREETING)
     vr.redirect(url="/webhook/twilio/voice_reprompt", method="POST")
     return Response(content=str(vr), media_type="application/xml")
 
@@ -140,18 +184,7 @@ async def voice(request: Request) -> Response:
 @router.post("/webhook/twilio/voice_reprompt")
 async def voice_reprompt(request: Request) -> Response:
     await _validate(request)
-    vr = VoiceResponse()
-    gather = Gather(
-        input="speech",
-        action="/webhook/twilio/gather",
-        method="POST",
-        speech_timeout="auto",
-        speech_model="phone_call",
-        language="en-US",
-        timeout=20,
-    )
-    gather.say(REPROMPT, voice=VOICE)
-    vr.append(gather)
+    vr = _gather(action="/webhook/twilio/gather", say_text=REPROMPT_ON_SILENCE)
     vr.say(FAREWELL_NO_SPEECH, voice=VOICE)
     vr.hangup()
     return Response(content=str(vr), media_type="application/xml")
@@ -166,44 +199,58 @@ async def gather(
     form = await request.form()
     call_sid = form.get("CallSid") or ""
     speech_result = (form.get("SpeechResult") or "").strip()
-    confidence = form.get("Confidence") or "0"
+    state = request.query_params.get("state", "initial")
 
-    log.info(
-        "gather call_sid=%s conf=%s result_len=%d",
-        call_sid, confidence, len(speech_result),
-    )
+    log.info("gather sid=%s state=%s result_len=%d", call_sid, state, len(speech_result))
 
-    # Empty transcript → reprompt once.
+    # Empty transcript → fall back to the silence re-prompt (same as before).
     if not speech_result:
         vr = VoiceResponse()
         vr.redirect(url="/webhook/twilio/voice_reprompt", method="POST")
         return Response(content=str(vr), media_type="application/xml")
 
-    # Persist transcript on the Call row; schedule post-call agent run.
-    payload: dict[str, str | int] | None = None
+    # Accumulate transcript on the Call row + try to capture email.
+    aggregate_transcript = ""
+    captured_email_str: str | None = None
+    call_id = 0
     with session_scope() as s:
         call = s.scalar(select(Call).where(Call.twilio_sid == call_sid))
         if call:
-            existing = (call.transcript or "").strip()
-            call.transcript = (existing + ("\n" if existing else "") + speech_result).strip()
-            call.caller_phone = call.caller_phone or form.get("From") or ""
-            payload = {
-                "call_id": call.id,
-                "caller_phone": call.caller_phone or "",
-                "transcript": call.transcript,
-            }
+            prior = (call.transcript or "").strip()
+            aggregate_transcript = (prior + ("\n" if prior else "") + speech_result).strip()
+            call.transcript = aggregate_transcript
+            call.turns = (call.turns or 0) + 1
+            if not call.captured_email:
+                email = extract_email(aggregate_transcript)
+                if email:
+                    call.captured_email = email
+            captured_email_str = call.captured_email
+            call_id = call.id
+    have_email = bool(captured_email_str)
 
-    if payload:
+    # Decide next TwiML.
+    if state == "initial" and not have_email:
+        # Re-prompt once, specifically for the email.
+        vr = _gather(action="/webhook/twilio/gather?state=email", say_text=REPROMPT_FOR_EMAIL)
+        vr.say(FAREWELL_INCOMPLETE, voice=VOICE)
+        vr.hangup()
+        return Response(content=str(vr), media_type="application/xml")
+
+    # Close the call. Pick the farewell based on whether we have an email now.
+    farewell = FAREWELL_COMPLETE if have_email else FAREWELL_INCOMPLETE
+    vr = _say_and_hangup(farewell)
+
+    # Kick off the post-call agent with whatever we've got.
+    if call_id:
+        caller_phone = form.get("From") or ""
         background_tasks.add_task(
             _run_post_call_agent,
-            call_id=int(payload["call_id"]),
-            caller_phone=str(payload["caller_phone"]),
-            transcript=str(payload["transcript"]),
+            call_id=call_id,
+            caller_phone=caller_phone,
+            transcript=aggregate_transcript,
+            captured_email=captured_email_str,
         )
 
-    vr = VoiceResponse()
-    vr.say(FAREWELL, voice=VOICE)
-    vr.hangup()
     return Response(content=str(vr), media_type="application/xml")
 
 
@@ -213,8 +260,6 @@ async def status(request: Request) -> Response:
     form = await request.form()
     call_sid = form.get("CallSid") or ""
     call_status = form.get("CallStatus") or ""
-    duration = form.get("CallDuration")
-
     if call_sid and call_status in ("completed", "canceled", "failed", "no-answer", "busy"):
         with session_scope() as s:
             call = s.scalar(select(Call).where(Call.twilio_sid == call_sid))
@@ -222,43 +267,81 @@ async def status(request: Request) -> Response:
                 call.ended_at = datetime.utcnow()
                 if call.status == "in_progress":
                     call.status = "completed" if call_status == "completed" else call_status
-
     return Response(status_code=204)
 
 
 # --- background agent ---
 
-def _build_live_call_prompt(call_id: int, caller_phone: str, transcript: str) -> str:
-    # Kept in-module to avoid circular imports with hermes.web.
+def _build_live_call_prompt(
+    call_id: int,
+    caller_phone: str,
+    transcript: str,
+    captured_email: str | None,
+) -> str:
+    from hermes.tools import resolve_qbo_contact
+    qbo_hit = resolve_qbo_contact(captured_email, caller_phone)
+    if captured_email:
+        email_line = (
+            f"CALLER EMAIL (extracted by the system, canonical): {captured_email}\n"
+            "Use this EXACT string verbatim wherever you need an email — "
+            "for find_qbo_customer_by_contact, create_client, "
+            "draft_intake_email, etc. Do NOT re-parse the transcript for the "
+            "email; trust this extracted value."
+        )
+    else:
+        email_line = (
+            "The caller's email was NOT captured — no usable email address "
+            "was obtained during the call."
+        )
+    final_step = (
+        "6. create_invoice — $250 consultation fee, one-line description. "
+        "Use the client_id from step 1 or 2. If the client has an "
+        "external_customer_id (because the QBO LOOKUP above matched), the "
+        "invoice reuses the QBO customer directly — no duplicate is created."
+        if captured_email
+        else "6. mark_call_needs_followup with reason 'missing email'. Do NOT "
+             "call create_invoice — we do not have a way to deliver or bill "
+             "this prospect yet. The call still gets a draft email so the "
+             "operator sees what WOULD go out; that draft uses "
+             "'callback-required@oakandpartners.example' as to_address."
+    )
+    from hermes.web import _format_qbo_lookup_block
     return (
         f"A phone call just ended (call_id={call_id}). Handle the intake "
         "end-to-end.\n\n"
         f"Caller phone: {caller_phone}\n"
+        f"Intake completeness: {email_line}\n\n"
+        f"{_format_qbo_lookup_block(qbo_hit)}"
         f"Transcript:\n\"\"\"\n{transcript}\n\"\"\"\n\n"
         "Do ALL of the following steps in order. Do not stop early.\n"
-        "1. lookup_client — search by any name you can infer from the "
-        "transcript, or by phone number.\n"
-        "2. If step 1 returned zero matches, extract the caller's name from "
-        "the transcript and call create_client with kind=individual, phone, "
-        "and an email only if the caller stated one aloud.\n"
+        "1. lookup_client — search LOCAL records by any name, email, or phone "
+        "you can infer from the transcript.\n"
+        "2. If step 1 returned zero local matches, call create_client with "
+        "the caller's name, kind=individual, phone, and email (only if "
+        "captured). IMPORTANT: if the QBO LOOKUP above reported matched=true, "
+        "you MUST pass its qbo_customer_id as external_customer_id so the "
+        "records link.\n"
         "3. log_call_summary — include caller_name extracted from the "
         "transcript, a 1-2 sentence summary, pick matter_type from the enum, "
         "and set urgency based on any deadlines mentioned.\n"
         "4. draft_intake_email — professional, acknowledges what was said, "
-        "commits to a specific next step. If no email was stated in the "
-        "transcript, use to_address='callback-required@oakandpartners.example' "
-        "so the operator knows to collect one.\n"
+        "commits to a specific next step. If no email was captured, use "
+        "to_address='callback-required@oakandpartners.example'.\n"
         "5. send_email — queue the draft (you will see queued_for_approval; "
         "continue).\n"
-        "6. create_invoice — $250 consultation fee, one-line description. "
-        "Use the client_id from step 1 or 2.\n"
-        "When the six steps are done, give a one-sentence summary."
+        f"{final_step}\n"
+        "When done, give a one-sentence summary that notes whether the "
+        "client was already in QBO."
     )
 
 
-def _run_post_call_agent(call_id: int, caller_phone: str, transcript: str) -> None:
-    """Synchronous wrapper; called via BackgroundTasks (new thread)."""
-    prompt = _build_live_call_prompt(call_id, caller_phone, transcript)
+def _run_post_call_agent(
+    call_id: int,
+    caller_phone: str,
+    transcript: str,
+    captured_email: str | None = None,
+) -> None:
+    prompt = _build_live_call_prompt(call_id, caller_phone, transcript, captured_email)
     try:
         run_agent(prompt, mode=AgentMode.NATIVE, max_iters=10)
     except Exception as e:

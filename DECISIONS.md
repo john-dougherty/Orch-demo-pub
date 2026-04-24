@@ -103,6 +103,33 @@ Pitch date: 2026-04-25 (Saturday).
   draft_intake_email, tier2-queue send_email, tier2-queue create_invoice,
   final), 2 approvals pending in dashboard.
 
+## QBO cross-system dedup — added 2026-04-24
+
+- `resolve_qbo_contact(email, phone)` in `hermes/tools.py` runs
+  server-side BEFORE the intake agent starts. Email-primary match
+  (exact `PrimaryEmailAddr`), phone fallback (trailing 10 digits, LIKE
+  substring against `PrimaryPhone`). Deterministic.
+- **Why server-side and not an LLM tool call:** Gemma unreliably re-parses
+  emails from transcripts — with input like `"Reyes at samantha.reyes@example.com"`
+  it would reconstruct `"reyes@samantha.reyes"` (treating " at " as `@`),
+  pass the garbage to the tool, get no match, and create a duplicate.
+  We run `extract_email()` + `resolve_qbo_contact()` ourselves and pipe
+  the result into the prompt as a "QBO LOOKUP RESULT" block the agent
+  cannot fabricate.
+- `extract_email()` had the same parser bug: it always ran the " at "→`@`
+  substitution before matching. Fixed to try a literal-email match first
+  and only fall back to spoken-form substitution for inputs like
+  "amara at post dot example".
+- `qbo.create_invoice(customer_id=...)` skips `find_or_create_customer`
+  when the caller already knows the QBO customer id, closing the
+  duplicate-create gap at invoice time.
+- `find_qbo_customer_by_contact` is still registered as a Tier-1 tool so
+  the Telegram operator-query agent can use it conversationally, but the
+  intake pipeline no longer relies on it.
+- `scripts/seed_qbo_customers.py` — pushes 3 demo customers into the QBO
+  sandbox so the walkthrough has a compelling "already in QBO" moment
+  (Samantha Reyes, intentionally NOT in local SQLite).
+
 ## QBO sandbox wired — closed 2026-04-23
 
 - Sandbox company: "Sandbox Company US f3c5" (US).

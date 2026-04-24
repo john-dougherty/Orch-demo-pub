@@ -97,6 +97,9 @@ class Call(Base):
     matter_type_guess: Mapped[str | None] = mapped_column(String(80), nullable=True)
     urgency: Mapped[str | None] = mapped_column(String(20), nullable=True)
     status: Mapped[str] = mapped_column(String(30), default="in_progress")
+    follow_up_reason: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    captured_email: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    turns: Mapped[int] = mapped_column(default=0)
 
 
 class Email(Base):

@@ -11,6 +11,7 @@ the loop enqueues it on the approval queue, and execution waits on a human.
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass, field
 from typing import Any, Callable, ClassVar
 
@@ -184,12 +185,104 @@ class ListMatters(Tool):
             )
 
 
+def _qbo_customer_row(c: dict, *, matched_by: str) -> dict:
+    return {
+        "matched": True,
+        "matched_by": matched_by,
+        "qbo_customer_id": str(c["Id"]),
+        "display_name": c.get("DisplayName"),
+        "email": (c.get("PrimaryEmailAddr") or {}).get("Address"),
+        "phone": (c.get("PrimaryPhone") or {}).get("FreeFormNumber"),
+    }
+
+
+def resolve_qbo_contact(email: str | None, phone: str | None) -> dict:
+    """Deterministic server-side QBO lookup by email (then phone).
+
+    Used by the intake pipeline BEFORE the agent runs, because LLMs
+    re-parse emails unreliably ("X at Y.com" produces surprising tool
+    arguments). Returns the same shape as `find_qbo_customer_by_contact`
+    for ergonomic parity with the tool (which remains available for
+    Telegram operator queries).
+    """
+    from hermes.qbo import qbo
+    if not qbo.configured:
+        return {"matched": False, "reason": "qbo_not_configured"}
+    email = (email or "").strip()
+    phone = (phone or "").strip()
+    if not email and not phone:
+        return {"matched": False, "reason": "no_contact_provided"}
+
+    # email — exact match
+    if email:
+        safe = email.replace("'", "\\'")
+        resp = qbo._request(
+            "GET",
+            f"/v3/company/{qbo._realm_id}/query",
+            params={
+                "query": f"select * from Customer where PrimaryEmailAddr = '{safe}' maxresults 5",
+                "minorversion": "73",
+            },
+        )
+        if resp.status_code == 200:
+            rows = resp.json().get("QueryResponse", {}).get("Customer", [])
+            if rows:
+                return _qbo_customer_row(rows[0], matched_by="email")
+
+    # phone — fuzzy, trailing 10 digits as substring
+    if phone:
+        digits = re.sub(r"\D", "", phone)
+        if len(digits) >= 10:
+            tail = digits[-10:]
+            resp = qbo._request(
+                "GET",
+                f"/v3/company/{qbo._realm_id}/query",
+                params={
+                    "query": f"select * from Customer where PrimaryPhone like '%{tail}%' maxresults 5",
+                    "minorversion": "73",
+                },
+            )
+            if resp.status_code == 200:
+                rows = resp.json().get("QueryResponse", {}).get("Customer", [])
+                if rows:
+                    return _qbo_customer_row(rows[0], matched_by="phone")
+
+    return {"matched": False}
+
+
+@register
+class FindQBOCustomerByContact(Tool):
+    """Kept available for the Telegram operator-query agent, NOT used by the
+    intake pipeline — that path runs resolve_qbo_contact() server-side."""
+    name = "find_qbo_customer_by_contact"
+    description = (
+        "Search QuickBooks Online for a customer matching a given email or "
+        "phone. Used for operator queries."
+    )
+    parameters = {
+        "type": "object",
+        "properties": {
+            "email": {"type": "string"},
+            "phone": {"type": "string"},
+        },
+        "required": [],
+    }
+    tier = 1
+
+    def execute(self, args, session_id):
+        res = resolve_qbo_contact(args.get("email"), args.get("phone"))
+        return ToolResult(ok=True, data=res)
+
+
 @register
 class CreateClient(Tool):
     name = "create_client"
     description = (
-        "Create a new client record. Use ONLY after lookup_client returns zero "
-        "matches. Returns the new client_id for use by subsequent tools."
+        "Create a new client record locally. Use ONLY after lookup_client "
+        "returns zero LOCAL matches AND find_qbo_customer_by_contact has been "
+        "attempted. If find_qbo_customer_by_contact found a match, pass its "
+        "qbo_customer_id as external_customer_id to link the records and "
+        "prevent QBO duplicates at invoice time. Returns the new client_id."
     )
     parameters = {
         "type": "object",
@@ -199,6 +292,13 @@ class CreateClient(Tool):
             "email": {"type": "string"},
             "phone": {"type": "string"},
             "notes": {"type": "string"},
+            "external_customer_id": {
+                "type": "string",
+                "description": (
+                    "QBO customer id if find_qbo_customer_by_contact returned "
+                    "a match. Omit if no QBO match."
+                ),
+            },
         },
         "required": ["display_name", "kind"],
     }
@@ -214,12 +314,53 @@ class CreateClient(Tool):
                 email=args.get("email"),
                 phone=args.get("phone"),
                 notes=args.get("notes"),
+                external_customer_id=args.get("external_customer_id") or None,
             )
             s.add(client)
             s.flush()
             return ToolResult(
                 ok=True,
-                data={"client_id": client.id, "display_name": client.display_name},
+                data={
+                    "client_id": client.id,
+                    "display_name": client.display_name,
+                    "external_customer_id": client.external_customer_id,
+                },
+            )
+
+
+@register
+class MarkCallNeedsFollowUp(Tool):
+    name = "mark_call_needs_followup"
+    description = (
+        "Flag a call as needing human follow-up because required intake "
+        "details (typically email) could not be captured during the call. "
+        "Call this INSTEAD of create_invoice when the caller's email is "
+        "missing or unusable. Leaves the call visible in the dashboard "
+        "with a follow-up flag so an operator can reach out."
+    )
+    parameters = {
+        "type": "object",
+        "properties": {
+            "call_id": {"type": "integer"},
+            "reason": {
+                "type": "string",
+                "description": "Short reason (e.g. 'missing email', 'unclear matter', 'abandoned').",
+            },
+        },
+        "required": ["call_id", "reason"],
+    }
+    tier = 1
+
+    def execute(self, args, session_id):
+        with session_scope() as s:
+            call = s.get(Call, args["call_id"])
+            if not call:
+                return ToolResult(ok=False, error=f"no call with id {args['call_id']}")
+            call.follow_up_reason = args["reason"][:200]
+            call.status = "needs_followup"
+            return ToolResult(
+                ok=True,
+                data={"call_id": call.id, "follow_up_reason": call.follow_up_reason},
             )
 
 
@@ -393,7 +534,7 @@ class CreateInvoice(Tool):
             display_name = client.display_name
             email = client.email
             phone = client.phone
-            external_customer_id = client.external_customer_id
+            external_customer_id_pre = client.external_customer_id
 
         # If QBO isn't configured, persist as draft (demo-safe fallback).
         if not qbo.configured:
@@ -424,6 +565,7 @@ class CreateInvoice(Tool):
             customer_phone=phone,
             amount=float(args["amount_dollars"]),
             description=args["description"],
+            customer_id=external_customer_id_pre,
         )
 
         with session_scope() as s:

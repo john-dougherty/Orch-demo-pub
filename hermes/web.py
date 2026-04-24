@@ -16,7 +16,7 @@ from typing import Any
 from fastapi import APIRouter, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
-from sqlalchemy import desc, select
+from sqlalchemy import desc, func, select
 
 from hermes.agent import AgentMode, run_agent
 from hermes.db import (
@@ -68,6 +68,28 @@ SIMULATED_SCENARIOS: dict[str, dict[str, str]] = {
             "You were referred by Halide Labs."
         ),
     },
+    "qbo_existing_caller": {
+        "label": "Cross-system caller — already in QBO, not in local",
+        "caller_name": "Samantha Reyes",
+        "caller_phone": "+1-415-555-0199",
+        "transcript": (
+            "Hi, this is Samantha Reyes at samantha.reyes@example.com. "
+            "Your firm helped me with a trademark registration last year — "
+            "I'm calling because a competitor just launched a product using "
+            "a name confusingly similar to ours and I want to understand our "
+            "enforcement options. Can someone call me back this week?"
+        ),
+    },
+    "abandoned_no_email": {
+        "label": "Incomplete intake — no email given (tests follow-up flag)",
+        "caller_name": "Jordan Fisk",
+        "caller_phone": "+1-510-555-0177",
+        "transcript": (
+            "Hi, this is Jordan Fisk. I was in a fender bender yesterday and the "
+            "other driver's insurance is giving me the runaround. Can someone "
+            "give me a call back about whether I have a case? I'm at this number."
+        ),
+    },
     "billing_question": {
         "label": "Existing client — billing question (simple)",
         "caller_name": "Sierra Construction — AP",
@@ -103,9 +125,14 @@ def _activity_payload() -> dict[str, list[dict[str, Any]]]:
                 "urgency": c.urgency or "—",
                 "started_at": _fmt_dt(c.started_at),
                 "status": c.status,
+                "follow_up_reason": c.follow_up_reason,
+                "captured_email": c.captured_email,
             }
             for c in s.scalars(select(Call).order_by(desc(Call.started_at)).limit(8))
         ]
+        followup_count = s.scalar(
+            select(func.count()).select_from(Call).where(Call.status == "needs_followup")
+        ) or 0
         emails = [
             {
                 "id": e.id,
@@ -130,7 +157,12 @@ def _activity_payload() -> dict[str, list[dict[str, Any]]]:
             }
             for i in s.scalars(select(Invoice).order_by(desc(Invoice.created_at)).limit(8))
         ]
-    return {"calls": calls, "emails": emails, "invoices": invoices}
+    return {
+        "calls": calls,
+        "emails": emails,
+        "invoices": invoices,
+        "followup_count": followup_count,
+    }
 
 
 def _approvals_payload() -> list[dict[str, Any]]:
@@ -311,25 +343,78 @@ async def simulate_call(
 def _build_call_prompt(
     call_id: int, caller_name: str, caller_phone: str, transcript: str
 ) -> str:
+    from hermes.tools import resolve_qbo_contact
+    from hermes.twilio_voice import extract_email
+    email = extract_email(transcript)
+    qbo_hit = resolve_qbo_contact(email, caller_phone)
+    if email:
+        completeness = (
+            f"CALLER EMAIL (extracted by the system, canonical): {email}\n"
+            "Use this EXACT string verbatim wherever you need an email — "
+            "for create_client, draft_intake_email, etc. Do NOT re-parse the "
+            "transcript for the email; trust this extracted value."
+        )
+        final_step = (
+            "6. create_invoice — $250 consultation fee, one line description "
+            '(e.g. "Initial legal consultation — employment matter"). Use the '
+            "client_id from step 1 or 2. If the client has an external_customer_id "
+            "(set from the QBO LOOKUP below), the invoice reuses that and "
+            "skips the duplicate-create path automatically."
+        )
+        step_4_hint = "Use the CALLER EMAIL (above) as to_address."
+    else:
+        completeness = "The caller's email was NOT captured — no usable email address in the transcript."
+        final_step = (
+            "6. mark_call_needs_followup with reason 'missing email'. Do NOT "
+            "call create_invoice — we have no way to deliver/bill this prospect "
+            "yet. The draft email in step 4 still gets created so the operator "
+            "sees what WOULD go out once email is obtained."
+        )
+        step_4_hint = (
+            "No email in transcript — use "
+            "to_address='callback-required@oakandpartners.example'."
+        )
     return (
         f"An intake call just ended (call_id={call_id}). Handle it end-to-end.\n\n"
         f"Caller: {caller_name}\n"
         f"Phone: {caller_phone}\n"
+        f"Intake completeness: {completeness}\n"
         f"Transcript:\n\"\"\"\n{transcript}\n\"\"\"\n\n"
+        f"{_format_qbo_lookup_block(qbo_hit)}"
         "Do ALL of the following steps in order. Do not stop early.\n"
-        "1. lookup_client — search for the caller by name or phone.\n"
-        "2. If step 1 returned zero matches, call create_client with the "
-        "caller's details (use the email from the transcript if given, "
-        "otherwise leave email unset). Remember the returned client_id.\n"
-        "3. log_call_summary — write a 1–2 sentence summary, pick matter_type "
-        "from the enum, set urgency.\n"
-        "4. draft_intake_email — professional, acknowledges what was said, "
-        "commits to a specific next step. Use the caller's real email from the "
-        "transcript as to_address.\n"
+        "1. lookup_client — search LOCAL records by name, email, or phone.\n"
+        "2. If step 1 returned zero local matches, call create_client with "
+        "the caller's details. IMPORTANT: if the QBO LOOKUP above reported "
+        "matched=true, you MUST pass its qbo_customer_id as the "
+        "external_customer_id argument. This links the records and prevents "
+        "a duplicate QBO customer being created at invoice time.\n"
+        "3. log_call_summary — write a 1–2 sentence summary, pick "
+        "matter_type from the enum, set urgency.\n"
+        f"4. draft_intake_email — professional, acknowledges what was said, "
+        f"commits to a specific next step. {step_4_hint}\n"
         "5. send_email — queue the drafted email (you will see it marked "
         "queued_for_approval; that is fine, continue).\n"
-        "6. create_invoice — $250 consultation fee, one line description "
-        '(e.g. "Initial legal consultation — employment matter"). Use the '
-        "client_id from step 1 or 2.\n"
-        "When all six steps are done, give a one-sentence summary."
+        f"{final_step}\n"
+        "When done, give a one-sentence summary that notes whether the "
+        "client was already in QBO."
+    )
+
+
+def _format_qbo_lookup_block(qbo_hit: dict) -> str:
+    if qbo_hit.get("matched"):
+        return (
+            "QBO LOOKUP RESULT (performed server-side, authoritative):\n"
+            f"  matched: true\n"
+            f"  matched_by: {qbo_hit.get('matched_by')}\n"
+            f"  qbo_customer_id: {qbo_hit.get('qbo_customer_id')}\n"
+            f"  display_name: {qbo_hit.get('display_name')}\n"
+            "→ This caller ALREADY EXISTS in QuickBooks Online. Pass "
+            f"external_customer_id='{qbo_hit.get('qbo_customer_id')}' "
+            "when calling create_client.\n\n"
+        )
+    return (
+        "QBO LOOKUP RESULT: matched=false — this caller is NOT in "
+        "QuickBooks Online yet. Call create_client without "
+        "external_customer_id; the QBO customer will be created at "
+        "invoice time.\n\n"
     )

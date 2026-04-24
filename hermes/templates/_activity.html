@@ -1,3 +1,14 @@
+{% if activity.followup_count %}
+  <div class="panel mb-6 px-6 py-4 flex items-center gap-4">
+    <span class="chip chip-oxblood">Follow-up</span>
+    <span class="display ink numeral">{{ activity.followup_count }}</span>
+    <span class="display-italic text-sm ink-mute">
+      {% if activity.followup_count == 1 %}intake needs operator follow-up — email was not captured during the call.
+      {% else %}intakes need operator follow-up — email was not captured during the call.{% endif %}
+    </span>
+  </div>
+{% endif %}
+
 <div class="grid grid-cols-1 md:grid-cols-3 gap-8">
 
   <!-- Calls -->
@@ -28,8 +39,17 @@
                   <span class="chip">{{ c.urgency }}</span>
                 {% endif %}
               {% endif %}
-              <span class="chip">{{ c.status }}</span>
+              {% if c.status == "needs_followup" %}
+                <span class="chip chip-oxblood">Follow-up</span>
+              {% else %}
+                <span class="chip">{{ c.status }}</span>
+              {% endif %}
             </div>
+            {% if c.follow_up_reason %}
+              <div class="mt-1 display-italic text-xs" style="color: var(--oxblood)">
+                Reason: {{ c.follow_up_reason }}
+              </div>
+            {% endif %}
             {% if c.summary %}
               <div class="mt-2 ink-soft text-xs leading-relaxed">{{ c.summary }}</div>
             {% endif %}

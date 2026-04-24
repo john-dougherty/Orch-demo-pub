@@ -181,15 +181,20 @@ class QBOClient:
         description: str,
         customer_email: str | None = None,
         customer_phone: str | None = None,
+        customer_id: str | None = None,
     ) -> InvoiceResult:
         if not self.configured:
             return InvoiceResult(ok=False, error="QBO not configured")
 
         try:
-            customer = self.find_or_create_customer(
-                customer_display_name, email=customer_email, phone=customer_phone
-            )
-            customer_id = str(customer["Id"])
+            # Dedup guard: if caller already knows the QBO customer id (set
+            # during intake via find_qbo_customer_by_contact), skip the
+            # find-or-create round trip entirely.
+            if not customer_id:
+                customer = self.find_or_create_customer(
+                    customer_display_name, email=customer_email, phone=customer_phone
+                )
+                customer_id = str(customer["Id"])
             service_item_id = self._default_service_item_id()
 
             body = {
