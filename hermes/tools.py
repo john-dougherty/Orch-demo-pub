@@ -687,6 +687,8 @@ class ListRecentCalls(Tool):
                             "urgency": c.urgency,
                             "summary": c.summary,
                             "started_at": c.started_at.isoformat() if c.started_at else None,
+                            "status": c.status,
+                            "follow_up_reason": c.follow_up_reason,
                         }
                         for c in rows
                     ]
@@ -756,11 +758,14 @@ class SummarizeDay(Tool):
             pending = s.scalars(
                 select(ApprovalRequest).where(ApprovalRequest.status == "pending")
             ).all()
+            followup_calls = [c for c in calls if c.status == "needs_followup"]
             return ToolResult(
                 ok=True,
                 data={
                     "window_hours": 24,
                     "calls_handled": len(calls),
+                    "calls_needing_followup": len(followup_calls),
+                    "followup_reasons": sorted({c.follow_up_reason for c in followup_calls if c.follow_up_reason}),
                     "emails_drafted": len(emails),
                     "emails_sent": sum(1 for e in emails if e.status == "sent"),
                     "invoices_created": len(invoices),
