@@ -247,6 +247,86 @@ def approvals_partial(request: Request) -> HTMLResponse:
     )
 
 
+@router.get("/partials/qbo-summary", response_class=HTMLResponse)
+def qbo_summary_partial(request: Request) -> HTMLResponse:
+    from hermes.qbo import ledger_cache
+    try:
+        summary = ledger_cache.summary()
+    except Exception as e:
+        summary = {"error": str(e)}
+    return templates.TemplateResponse(
+        request, "_qbo_summary.html", {"summary": summary}
+    )
+
+
+@router.get("/ledger", response_class=HTMLResponse)
+def ledger_page(request: Request) -> HTMLResponse:
+    from hermes.qbo import ledger_cache
+    try:
+        invoices = ledger_cache.invoices()
+        summary = ledger_cache.summary()
+        error = None
+    except Exception as e:
+        invoices, summary, error = [], {}, str(e)
+
+    # Cross-reference each QBO invoice with local Hermes-created invoices so
+    # we can badge rows the bot originated.
+    with session_scope() as s:
+        local_invoices = s.scalars(select(Invoice).where(Invoice.external_invoice_id.is_not(None))).all()
+        hermes_ids = {i.external_invoice_id for i in local_invoices}
+
+    from datetime import date
+    today = date.today()
+    rows = []
+    for inv in invoices:
+        status = _invoice_status(inv, today)
+        rows.append(
+            {
+                **inv,
+                "status": status,
+                "hermes_created": inv["id"] in hermes_ids,
+                "amount_display": f"${inv['total']:,.2f}",
+                "balance_display": f"${inv['balance']:,.2f}",
+            }
+        )
+    return templates.TemplateResponse(
+        request,
+        "ledger.html",
+        {
+            "firm_name": "Oak & Partners",
+            "firm_name_established": "MCMLXXI",
+            "today_long": datetime.utcnow().strftime("%B %-d, %Y"),
+            "invoices": rows,
+            "summary": summary,
+            "error": error,
+        },
+    )
+
+
+def _invoice_status(inv: dict, today) -> dict:
+    """Classify a QBO invoice row for UI display."""
+    from datetime import date
+    bal = inv.get("balance", 0) or 0
+    total = inv.get("total", 0) or 0
+    due = inv.get("due_date")
+    if bal <= 0 and total > 0:
+        return {"label": "paid", "tone": "moss"}
+    # open
+    due_date = None
+    if due:
+        try:
+            y, m, d = (int(x) for x in due.split("-"))
+            due_date = date(y, m, d)
+        except Exception:
+            due_date = None
+    if due_date and due_date < today:
+        days = (today - due_date).days
+        return {"label": f"overdue {days}d", "tone": "oxblood"}
+    if due_date and (due_date - today).days <= 7:
+        return {"label": f"due in {(due_date - today).days}d", "tone": "amber"}
+    return {"label": "open", "tone": "slate"}
+
+
 # --- routes: approvals ---
 
 @router.post("/approvals/{req_id}/approve", response_class=HTMLResponse)

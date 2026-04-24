@@ -1,0 +1,88 @@
+{% extends "base.html" %}
+{% block title %}{{ firm_name }} — Billing Ledger{% endblock %}
+
+{% block body %}
+<div class="space-y-6 stagger">
+
+  <div class="flex items-baseline justify-between">
+    <div>
+      <div class="label">Source · QuickBooks Online</div>
+      <h2 class="display text-3xl ink">Billing Ledger</h2>
+    </div>
+    <a href="/" class="label hover:underline">← Back to intake</a>
+  </div>
+
+  {% if error %}
+    <div class="panel px-5 py-3 text-sm" style="color: var(--oxblood)">
+      QBO read failed — {{ error }}
+    </div>
+  {% else %}
+    {% include "_qbo_summary.html" %}
+  {% endif %}
+
+  <div class="panel overflow-hidden">
+    {% if not invoices %}
+      <div class="px-6 py-10 text-center display-italic ink-mute">
+        No invoices returned from QBO.
+      </div>
+    {% else %}
+      <table class="w-full text-sm">
+        <thead>
+          <tr class="rule-b">
+            <th class="label text-left px-5 py-3">Date</th>
+            <th class="label text-left px-5 py-3">№</th>
+            <th class="label text-left px-5 py-3">Customer</th>
+            <th class="label text-right px-5 py-3">Total</th>
+            <th class="label text-right px-5 py-3">Balance</th>
+            <th class="label text-left px-5 py-3">Status</th>
+            <th class="label text-left px-5 py-3">Due</th>
+            <th class="label text-left px-5 py-3"></th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for inv in invoices %}
+            <tr class="border-t hairline hover:bg-cream-lo">
+              <td class="px-5 py-3 numeral ink-soft">{{ inv.txn_date or "—" }}</td>
+              <td class="px-5 py-3 numeral">
+                <span class="display ink">{{ inv.doc_number }}</span>
+                {% if inv.hermes_created %}
+                  <span class="chip ml-1" style="color: var(--moss); border-color: rgba(61,90,59,0.35); background: rgba(61,90,59,0.06);">Hermes</span>
+                {% endif %}
+              </td>
+              <td class="px-5 py-3">
+                <span class="display ink">{{ inv.customer_name or "—" }}</span>
+                {% if inv.customer_email %}
+                  <span class="ink-mute text-xs block">{{ inv.customer_email }}</span>
+                {% endif %}
+              </td>
+              <td class="px-5 py-3 text-right numeral ink-soft">{{ inv.amount_display }}</td>
+              <td class="px-5 py-3 text-right numeral">
+                <span class="display ink">{{ inv.balance_display }}</span>
+              </td>
+              <td class="px-5 py-3">
+                {% if inv.status.tone == "oxblood" %}
+                  <span class="chip chip-oxblood">{{ inv.status.label }}</span>
+                {% elif inv.status.tone == "moss" %}
+                  <span class="chip chip-moss">{{ inv.status.label }}</span>
+                {% elif inv.status.tone == "amber" %}
+                  <span class="chip chip-amber">{{ inv.status.label }}</span>
+                {% else %}
+                  <span class="chip">{{ inv.status.label }}</span>
+                {% endif %}
+              </td>
+              <td class="px-5 py-3 numeral ink-mute">{{ inv.due_date or "—" }}</td>
+              <td class="px-5 py-3">
+                <a href="{{ inv.url }}" target="_blank" rel="noopener" class="text-xs">Open in QBO ↗</a>
+              </td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    {% endif %}
+  </div>
+
+  <div class="text-xs ink-mute display-italic">
+    Read-only view of QuickBooks Online · cached for 30 seconds · {{ invoices|length }} rows
+  </div>
+</div>
+{% endblock %}

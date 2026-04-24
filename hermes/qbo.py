@@ -11,10 +11,12 @@ JSON payloads. Full docs: https://developer.intuit.com/app/developer/qbapi/docs/
 from __future__ import annotations
 
 import base64
+import json
 import logging
 import threading
 import time
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 
 import httpx
@@ -52,11 +54,40 @@ class QBOClient:
         self._access_token: str | None = settings.qbo_access_token or None
         # QBO access tokens live 3600s. Be conservative — refresh 60s early.
         self._access_expires_at: float = time.time() + 3500 if self._access_token else 0.0
-        self._refresh_token: str = settings.qbo_refresh_token
         self._client_id = settings.qbo_client_id
         self._client_secret = settings.qbo_client_secret
         self._realm_id = settings.qbo_realm_id
         self._env = settings.qbo_environment or "sandbox"
+        # Persistent refresh-token store. QBO rotates refresh tokens on every
+        # exchange and invalidates the prior one — without persisting across
+        # restarts we'd get an invalid_grant after the first refresh cycle.
+        self._token_file: Path = settings.data_dir / "qbo_refresh.json"
+        stored = self._load_stored_refresh_token()
+        self._refresh_token: str = stored or settings.qbo_refresh_token
+
+    def _load_stored_refresh_token(self) -> str | None:
+        try:
+            if self._token_file.exists():
+                data = json.loads(self._token_file.read_text())
+                tok = (data.get("refresh_token") or "").strip()
+                return tok or None
+        except Exception as e:
+            log.warning("qbo_refresh.json unreadable; falling back to env: %s", e)
+        return None
+
+    def _save_refresh_token(self, token: str) -> None:
+        try:
+            self._token_file.parent.mkdir(parents=True, exist_ok=True)
+            self._token_file.write_text(
+                json.dumps({"refresh_token": token, "updated_at": time.time()}, indent=2)
+            )
+            try:
+                import os
+                os.chmod(self._token_file, 0o600)
+            except Exception:
+                pass
+        except Exception as e:
+            log.warning("could not persist rotated refresh token: %s", e)
 
     # --- credential state ---
 
@@ -99,9 +130,12 @@ class QBOClient:
         data = resp.json()
         self._access_token = data["access_token"]
         self._access_expires_at = time.time() + int(data.get("expires_in", 3600)) - 60
-        # QBO rotates refresh tokens occasionally; update if present.
-        if "refresh_token" in data:
+        # QBO rotates refresh tokens on every exchange. Persist the new one
+        # so we survive service restarts — otherwise the next boot uses the
+        # stale `.env` value and Intuit returns `invalid_grant`.
+        if "refresh_token" in data and data["refresh_token"] != self._refresh_token:
             self._refresh_token = data["refresh_token"]
+            self._save_refresh_token(self._refresh_token)
         log.info("QBO token refreshed; next refresh in %.0fs", self._access_expires_at - time.time())
 
     # --- low-level request ---
@@ -239,4 +273,122 @@ class QBOClient:
             return InvoiceResult(ok=False, error=str(e))
 
 
+    # --- ledger reads (cached) ---
+
+    def list_invoices(self, *, open_only: bool = False, limit: int = 200) -> list[dict]:
+        """Pull invoices from QBO. Shape reduced to what the ledger UI needs.
+
+        NOTE: QBO's query language rejects comparison operators like
+        `Balance > 0`, so `open_only` is implemented as a client-side
+        filter on the full result set.
+        """
+        if not self.configured:
+            return []
+        q = (
+            f"select * from Invoice "
+            f"orderby MetaData.LastUpdatedTime desc maxresults {max(1, min(1000, limit))}"
+        )
+        r = self._request(
+            "GET",
+            f"/v3/company/{self._realm_id}/query",
+            params={"query": q, "minorversion": "73"},
+        )
+        if r.status_code != 200:
+            log.warning("QBO list_invoices failed: %s %s", r.status_code, r.text[:200])
+            return []
+        rows = r.json().get("QueryResponse", {}).get("Invoice", []) or []
+        if open_only:
+            rows = [inv for inv in rows if float(inv.get("Balance") or 0) > 0]
+        out: list[dict] = []
+        for inv in rows:
+            out.append(
+                {
+                    "id": str(inv["Id"]),
+                    "doc_number": inv.get("DocNumber") or str(inv["Id"]),
+                    "customer_id": str((inv.get("CustomerRef") or {}).get("value") or ""),
+                    "customer_name": (inv.get("CustomerRef") or {}).get("name"),
+                    "customer_email": (inv.get("BillEmail") or {}).get("Address"),
+                    "txn_date": inv.get("TxnDate"),
+                    "due_date": inv.get("DueDate"),
+                    "total": float(inv.get("TotalAmt") or 0),
+                    "balance": float(inv.get("Balance") or 0),
+                    "currency": (inv.get("CurrencyRef") or {}).get("value", "USD"),
+                    "url": f"{_APP_URL[self._env]}/app/invoice?txnId={inv['Id']}",
+                }
+            )
+        return out
+
+    def invoice_summary(self) -> dict:
+        """Roll-up totals similar to QBO's own invoice dashboard."""
+        from datetime import date
+        today = date.today()
+        unpaid_total = 0.0
+        overdue_total = 0.0
+        overdue_count = 0
+        not_due_yet_total = 0.0
+        paid_recent_total = 0.0
+        open_invoices = self.list_invoices(open_only=True, limit=500)
+        for inv in open_invoices:
+            bal = inv["balance"]
+            unpaid_total += bal
+            due = inv.get("due_date")
+            if due:
+                try:
+                    y, m, d = (int(x) for x in due.split("-"))
+                    is_overdue = date(y, m, d) < today
+                except Exception:
+                    is_overdue = False
+                if is_overdue:
+                    overdue_total += bal
+                    overdue_count += 1
+                else:
+                    not_due_yet_total += bal
+            else:
+                not_due_yet_total += bal
+        # Paid recent = invoices with Balance==0 updated recently.
+        paid_recent_total = 0.0
+        return {
+            "unpaid_total": round(unpaid_total, 2),
+            "overdue_total": round(overdue_total, 2),
+            "overdue_count": overdue_count,
+            "not_due_yet_total": round(not_due_yet_total, 2),
+            "open_invoice_count": len(open_invoices),
+            "generated_at": time.time(),
+        }
+
+
+# --- ledger cache (30s TTL) ---
+
+class _LedgerCache:
+    def __init__(self, ttl_seconds: float = 30.0) -> None:
+        self._ttl = ttl_seconds
+        self._lock = threading.Lock()
+        self._summary: tuple[float, dict] | None = None
+        self._invoices: tuple[float, list[dict]] | None = None
+
+    def summary(self) -> dict:
+        with self._lock:
+            if self._summary and time.time() - self._summary[0] < self._ttl:
+                return self._summary[1]
+        fresh = qbo.invoice_summary()
+        with self._lock:
+            self._summary = (time.time(), fresh)
+        return fresh
+
+    def invoices(self) -> list[dict]:
+        with self._lock:
+            if self._invoices and time.time() - self._invoices[0] < self._ttl:
+                return self._invoices[1]
+        fresh = qbo.list_invoices(open_only=False, limit=200)
+        with self._lock:
+            self._invoices = (time.time(), fresh)
+        return fresh
+
+    def invalidate(self) -> None:
+        with self._lock:
+            self._summary = None
+            self._invoices = None
+
+
 qbo = QBOClient()
+ledger_cache = _LedgerCache(ttl_seconds=30.0)

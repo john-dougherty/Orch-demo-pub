@@ -1,0 +1,24 @@
+{% if summary.get("error") %}
+  <div class="panel px-5 py-3 flex items-center gap-3 text-xs" style="color: var(--oxblood)">
+    <span class="label">QBO ledger</span>
+    <span class="display-italic">unavailable — {{ summary.error }}</span>
+  </div>
+{% else %}
+  <div class="panel px-5 py-3 flex flex-wrap items-center gap-x-8 gap-y-2">
+    <div class="flex items-baseline gap-2">
+      <span class="display-italic text-2xl ink numeral">${{ "{:,.2f}".format(summary.unpaid_total or 0) }}</span>
+      <span class="label">Unpaid</span>
+    </div>
+    <div class="flex items-baseline gap-2">
+      <span class="display text-base numeral" style="color: var(--oxblood)">${{ "{:,.2f}".format(summary.overdue_total or 0) }}</span>
+      <span class="label" style="color: var(--oxblood)">Overdue &middot; {{ summary.overdue_count or 0 }}</span>
+    </div>
+    <div class="flex items-baseline gap-2">
+      <span class="display text-base ink numeral">${{ "{:,.2f}".format(summary.not_due_yet_total or 0) }}</span>
+      <span class="label">Not due yet</span>
+    </div>
+    <div class="ml-auto">
+      <a href="/ledger" class="label" style="color: var(--oxblood)">View full ledger →</a>
+    </div>
+  </div>
+{% endif %}

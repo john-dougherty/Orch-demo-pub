@@ -116,6 +116,16 @@
         Refresh
       </button>
     </div>
+
+    <!-- QBO summary strip — polled every 30s; the cache keeps QBO API calls at one per 30s regardless of how many clients are watching -->
+    <div id="qbo-summary"
+         class="mb-6"
+         hx-get="/partials/qbo-summary"
+         hx-trigger="load, every 30s"
+         hx-swap="innerHTML">
+      <div class="panel px-5 py-3 text-xs ink-mute display-italic">Loading QBO ledger summary…</div>
+    </div>
+
     <div id="activity"
          hx-get="/partials/activity"
          hx-trigger="every 5s"
