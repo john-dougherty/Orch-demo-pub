@@ -43,8 +43,10 @@ GREETING = (
 )
 
 REPROMPT_FOR_EMAIL = (
-    "Thank you. I want to make sure we can follow up. Please say your email "
-    "address naturally — for example, 'jane at gmail dot com'. Take your time."
+    "Thank you. I did not catch an email address — could you please share "
+    "yours now? Say it naturally, like 'jane at gmail dot com'. If you do "
+    "not have one, just say 'I don't have one' and we will follow up by "
+    "phone instead. Take your time."
 )
 
 REPROMPT_ON_SILENCE = (
@@ -141,27 +143,27 @@ def _gather(action: str, say_text: str) -> VoiceResponse:
         input="speech",
         action=action,
         method="POST",
-        # Explicit numeric speech_timeout tolerates natural pauses far better
-        # than Twilio's aggressive "auto" silence detection.
-        speech_timeout="4",
+        # 8s of silence after detected speech before Twilio considers the
+        # caller done. Real callers pause to think mid-sentence; 4s was too
+        # tight (we observed single-syllable transcripts in real calls).
+        # Trade-off is slightly longer call duration; cost impact pennies.
+        speech_timeout="8",
         speech_model="phone_call",
-        # Enhanced model is ~4× the cost of standard phone_call but noticeably
-        # more accurate on proper nouns and structured strings like emails.
-        # The delta is pennies per call and the accuracy gain is load-bearing
-        # for a demo.
+        # Enhanced model is ~4× the cost of standard phone_call but
+        # noticeably more accurate on proper nouns and structured strings
+        # like emails. Pennies per call, load-bearing for a demo.
         enhanced="true",
         language="en-US",
-        # `hints` biases STT toward recognizing domain/keyword tokens that
-        # are common in intake calls. Comma-separated string; each hint can
-        # be a single word or short phrase.
+        # Hints bias STT toward recognizing tokens common in intake calls.
         hints=(
             "at, dot, email, my email, my email address, "
             "gmail, yahoo, hotmail, outlook, icloud, aol, proton, fastmail, "
             "com, org, net, io, co, edu, "
-            "my name is, my phone number is, call me back, consultation"
+            "my name is, my phone number is, call me back, consultation, "
+            "I don't have one, I don't have an email"
         ),
-        timeout=15,          # wait 15s for speech to START after the prompt
-        max_speech_time=60,  # up to 60s once speaking
+        timeout=20,          # wait 20s for speech to START after the prompt
+        max_speech_time=90,  # up to 90s once speaking (was 60s)
     )
     g.say(say_text, voice=VOICE)
     vr.append(g)
