@@ -5,10 +5,20 @@ accounting, medical). Runs on a customer-owned box. Answers the phone, drafts th
 follow-up, files the invoice — with a human-in-the-loop approval gate between
 "draft" and "send" on anything consequential.
 
-This repository is the **investor-demo build**, modeled on a fictitious law firm
+## 🚀 Handoff Summary (Public Fork)
+
+This fork has been prepared for external sharing. Key changes for new environment setup:
+- **Credential Masking:** All API keys in `.env.example` and `config.py` replaced with `XXX-000` patterns.
+- **AI Runbook:** Added [`DEVELOPMENT.md`](./DEVELOPMENT.md) with architectural mandates for AI-assisted maintenance.
+- **Auto-Scaffolding:** `main.py` now automatically creates the `./data` directory on startup.
+- **Validation:** Use `python scripts/check_env.py` to verify your credentials before launching.
+
+This repository is the **investor-demo build**
+, modeled on a fictitious law firm
 ("Oak & Partners"). Production deliberately lives in a separate repo so demo
 shortcuts don't contaminate production decisions. Tracked shortcuts and
-deferrals live in [`DECISIONS.md`](./DECISIONS.md).
+deferrals live in [`DECISIONS.md`](./DECISIONS.md). For AI-assisted development 
+and project ingestion guidelines, see [`DEVELOPMENT.md`](./DEVELOPMENT.md).
 
 ---
 
@@ -116,7 +126,36 @@ the shape immediately.
 
 ---
 
-## Tech stack
+## 🛠️ Setup & Configuration
+
+### 1. Environment Preparation
+Copy the example environment file and fill in your credentials:
+```bash
+cp .env.example .env
+```
+
+### 2. Credential Mapping
+The system requires keys from the following vendors. Replace the `XXXXX` placeholders in your `.env` with real values:
+
+| Service | Variable | Purpose | Where to find |
+| :--- | :--- | :--- | :--- |
+| **Ollama** | `OLLAMA_BASE_URL` | Local LLM host | Your Ollama server address (default: `http://localhost:11434`) |
+| **xAI** | `FALLBACK_API_KEY` | Fallback LLM (Grok) | [x.ai Console](https://console.x.ai/) |
+| **Twilio** | `TWILIO_AUTH_TOKEN` | Phone/SMS logic | [Twilio Console](https://www.twilio.com/console) |
+| **Cartesia** | `TTS_API_KEY` | Text-to-Speech | [Cartesia Play](https://play.cartesia.ai/) |
+| **Intuit** | `QBO_CLIENT_ID` | QuickBooks Online | [Intuit Developer Portal](https://developer.intuit.com/) |
+| **Telegram** | `TELEGRAM_BOT_TOKEN` | Bot interface | Talk to [@BotFather](https://t.me/botfather) |
+
+### 3. Database Initialization
+```bash
+# Install dependencies
+pip install -e .
+
+# Seed initial firm and fake data
+python scripts/seed_fake_data.py
+```
+
+## 🏗️ Technical Stack
 
 | Layer | Choice | Notes |
 |---|---|---|

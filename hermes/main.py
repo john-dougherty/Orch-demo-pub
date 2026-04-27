@@ -9,6 +9,10 @@ from hermes.web import router as web_router
 
 app = FastAPI(title="HermesOrch", version="0.1.0")
 
+@app.on_event("startup")
+def startup_event():
+    settings.data_dir.mkdir(parents=True, exist_ok=True)
+
 # Trust forwarded headers from ngrok/Cloudflare so request.url reflects the
 # public URL Twilio hit (needed for signature validation).
 app.add_middleware(ProxyHeadersMiddleware, trusted_hosts="*")
